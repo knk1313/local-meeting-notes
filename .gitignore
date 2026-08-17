@@ -1,0 +1,39 @@
+# --- 環境変数 ---
+.env
+.env.*
+!.env.example
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# --- Node / フロントエンド ---
+node_modules/
+dist/
+dist-ssr/
+*.local
+
+# --- 音声ファイル（処理後に破棄する想定だが、保持オプション時の混入を防ぐ） ---
+*.wav
+*.mp3
+*.m4a
+*.aac
+*.flac
+*.ogg
+*.webm
+audio/
+recordings/
+
+# --- エディタ / OS ---
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+*.swp
