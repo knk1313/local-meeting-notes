@@ -98,7 +98,8 @@ tags: [meeting, project-...]
 | 領域 | 選定（方向性） |
 |---|---|
 | Backend | Python (FastAPI) |
-| Frontend | 未定 |
+| Frontend | React + TypeScript (Vite) |
+| パッケージマネージャ (Frontend) | pnpm |
 | STT | OpenAI API / Google Speech-to-Text |
 | タスク分解LLM | Claude API |
 
@@ -114,7 +115,15 @@ local-meeting-notes/
 │   │   ├── audio/        # 音声キャプチャ・チャンク処理
 │   │   └── output/       # Markdown生成・Git連携
 │   └── requirements.txt
-├── frontend/              # 未定
+├── frontend/
+│   ├── src/
+│   │   ├── main.tsx       # エントリポイント
+│   │   └── App.tsx
+│   ├── public/
+│   ├── index.html
+│   ├── vite.config.ts
+│   ├── eslint.config.js
+│   └── package.json
 ├── notes/                 # 出力先
 ├── .env.example
 └── README.md

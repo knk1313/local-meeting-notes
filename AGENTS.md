@@ -5,7 +5,7 @@
 - **Claude Code**: ルート `CLAUDE.md` から `@AGENTS.md` で取り込まれる
 - **OpenAI Codex**: ルート `AGENTS.md` を直接読み込む 
 
-人間 contributor 向けの一般規約 (Issue / PR の出し方、ActivityPub 拡張など) は [CONTRIBUTING.md](CONTRIBUTING.md) を参照。本ファイルは AI が **コードを書く・直す・出す** 際に踏み外してはいけない事項に絞る。
+人間 contributor 向けの一般規約 (Issue / PR の出し方など) は [CONTRIBUTING.md](CONTRIBUTING.md) を参照。本ファイルは AI が **コードを書く・直す・出す** 際に踏み外してはいけない事項に絞る。
 
 ## プロジェクト概要
 
@@ -13,9 +13,22 @@
 
 ## コマンド
 
-フロントエンドの作業は `frontend/` で行う。
+フロントエンドの作業は `frontend/` で行う (パッケージマネージャは pnpm)。
 
-バックエンドの作業は `backend/` で行う。
+| 用途 | コマンド |
+|---|---|
+| 依存インストール | `pnpm install` |
+| 開発サーバ | `pnpm dev` |
+| ビルド (型チェック込み) | `pnpm build` |
+| Lint | `pnpm lint` |
+| ビルド結果のプレビュー | `pnpm preview` |
+
+バックエンドの作業は `backend/` で行う。仮想環境は `backend/.venv`。
+
+| 用途 | コマンド |
+|---|---|
+| 仮想環境の有効化 | `source .venv/bin/activate` |
+| 依存インストール | `pip install -r requirements.txt` |
 
 ## git 操作
 
