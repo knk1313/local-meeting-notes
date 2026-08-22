@@ -37,3 +37,7 @@ recordings/
 .idea/
 .DS_Store
 *.swp
+
+# --- Claude Code (個人ローカル設定 / MCP 認証情報) ---
+.claude/settings.local.json
+.claude/.credentials.json

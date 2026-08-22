@@ -1,24 +1,7 @@
 # CLAUDE.md
 
-## プロジェクト概要
+ルール本体は [AGENTS.md](AGENTS.md) (Codex 等と共有する単一ソース)。本ファイルは Claude Code 用の薄いラッパーで、`@AGENTS.md` 構文で本体規約をセッション開始時にコンテキストへ展開する。
 
-`README.md` を参照（技術スタック・ディレクトリ構成）。
+Claude Code 固有の補助 (skills / agents / slash commands / docs) は `.claude/` 配下に置く。個人ローカル設定は `.claude/settings.local.json` に、MCP 認証情報は `.claude/.credentials.json` に置く (いずれも `.gitignore` 済)。
 
-## コマンド
-
-フロントエンドの作業は `frontend/` で行う。
-
-バックエンドの作業は `backend/` で行う。
-
-## git 操作
-
-**git の操作は行わない。** ブランチの作成・切り替え、`add` / `commit` / `push` / `merge` /
-`rebase` / `reset` / `stash`、PR の作成はすべて人間が行う。明示的に依頼された場合のみ実行する。
-
-コード変更は作業ツリーに残すところまでで止め、状態確認のための読み取り専用のコマンド
-（`git status` / `git log` / `git diff` など）は実行してよい。
-
-## 規約
-
-- **コミットメッセージ**: 日本語。機能追加は `feat:` などの prefix を付ける。
-- **PR**: `.github/pull_request_template.md` のフォーマットに沿う。
+@AGENTS.md
