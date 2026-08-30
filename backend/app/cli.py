@@ -1,4 +1,4 @@
-"""Command-line interface for Local Meeting Notes."""
+"""会議ノートのコマンドラインインターフェース。"""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from app.settings import PROJECT_ROOT, settings
 
 
 def build_parser() -> argparse.ArgumentParser:
-    """Create the command-line argument parser."""
+    """コマンドライン引数パーサーを作成する。"""
     parser = argparse.ArgumentParser(description="ローカル会議ノートを開始します。")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -43,12 +43,12 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def default_title() -> str:
-    """Generate a title for meetings started without ``--title``."""
+    """``--title`` 未指定時の会議タイトルを生成する。"""
     return datetime.now().strftime("meeting-%Y%m%d-%H%M%S")
 
 
 def resolve_notes_dir(notes_dir: Path | None) -> Path:
-    """Resolve a CLI override or the configured notes directory."""
+    """CLI指定値または設定済みの出力先ディレクトリを解決する。"""
     if notes_dir is None:
         return settings.notes_dir
     if notes_dir.is_absolute():
@@ -57,7 +57,7 @@ def resolve_notes_dir(notes_dir: Path | None) -> Path:
 
 
 def run_start(args: argparse.Namespace) -> int:
-    """Resolve and display meeting settings until recording is implemented."""
+    """録音実装までの暫定処理として会議設定を解決・表示する。"""
     title = args.title or default_title()
     notes_dir = resolve_notes_dir(args.notes_dir)
 
@@ -70,7 +70,7 @@ def run_start(args: argparse.Namespace) -> int:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """Run the CLI."""
+    """CLIを実行する。"""
     parser = build_parser()
     args = parser.parse_args(argv)
 

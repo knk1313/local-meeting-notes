@@ -1,1 +1,1 @@
-"""LLM-powered meeting summarization and task extraction."""
+"""LLMによる会議の要約とタスク抽出。"""

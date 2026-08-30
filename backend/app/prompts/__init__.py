@@ -1,1 +1,1 @@
-"""Customizable prompt templates for LLM processing."""
+"""LLM処理向けのカスタマイズ可能なプロンプトテンプレート。"""
