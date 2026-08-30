@@ -22,6 +22,7 @@ class Settings:
 
     openai_api_key: str | None
     anthropic_api_key: str | None
+    claude_model: str | None
     notes_dir: Path
 
     @classmethod
@@ -34,6 +35,7 @@ class Settings:
         return cls(
             openai_api_key=os.getenv("OPENAI_API_KEY"),
             anthropic_api_key=os.getenv("ANTHROPIC_API_KEY"),
+            claude_model=os.getenv("CLAUDE_MODEL"),
             notes_dir=notes_dir,
         )
 
