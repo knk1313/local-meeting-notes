@@ -1,1 +1,1 @@
-"""Speech-to-text provider abstractions and implementations."""
+"""音声認識プロバイダの抽象化と実装。"""

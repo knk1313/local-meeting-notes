@@ -1,4 +1,4 @@
-"""Application settings loaded from the repository's ``.env`` file."""
+"""リポジトリ直下の ``.env`` から読み込むアプリケーション設定。"""
 
 from __future__ import annotations
 
@@ -12,13 +12,13 @@ from dotenv import load_dotenv
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DOTENV_PATH = PROJECT_ROOT / ".env"
 
-# Existing process environment variables take precedence over values in .env.
+# 既に設定済みの環境変数を .env の値より優先する。
 load_dotenv(DOTENV_PATH, override=False)
 
 
 @dataclass(frozen=True)
 class Settings:
-    """Configuration shared by the STT, LLM, and output layers."""
+    """STT・LLM・出力層で共有する設定。"""
 
     openai_api_key: str | None
     anthropic_api_key: str | None
@@ -26,7 +26,7 @@ class Settings:
 
     @classmethod
     def from_environment(cls) -> "Settings":
-        """Build settings from the current environment."""
+        """現在の環境変数から設定を構築する。"""
         notes_dir = Path(os.getenv("NOTES_DIR", "notes"))
         if not notes_dir.is_absolute():
             notes_dir = PROJECT_ROOT / notes_dir

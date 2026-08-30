@@ -1,4 +1,4 @@
-"""Module entry point for ``python -m app``."""
+"""``python -m app`` のモジュールエントリポイント。"""
 
 from app.cli import main
 

@@ -1,1 +1,1 @@
-"""Meeting-note output generation and destination integrations."""
+"""会議ノートの出力生成と出力先連携。"""

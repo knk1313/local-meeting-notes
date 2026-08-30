@@ -1,1 +1,1 @@
-"""Local Meeting Notes backend package."""
+"""会議ノートのバックエンドパッケージ。"""
