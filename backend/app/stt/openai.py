@@ -42,7 +42,7 @@ class OpenAiSttProvider(SttProvider):
         client: OpenAI | None = None,
     ) -> None:
         """
-        Args:
+        引数:
             model: 使用するモデル名。既定は `gpt-4o-transcribe-diarize`。
             client: 使用する OpenAI クライアント。未指定なら環境変数から生成する。
         """

@@ -23,7 +23,7 @@ class SttError(RuntimeError):
 class Segment:
     """話者ラベル付きの文字起こし断片。
 
-    Attributes:
+    属性:
         speaker: 話者ラベル。プロバイダが返す ID をそのまま保持する
             (OpenAI なら "A" / "B" ...)。表示用の表記への変換は上位層で行う。
             話者分離に対応しないプロバイダ・モデルでは None。
@@ -45,12 +45,12 @@ class SttProvider(ABC):
     def transcribe(self, path: Path) -> list[Segment]:
         """音声ファイル 1 本を文字起こしし、時系列順の `Segment` 列を返す。
 
-        Args:
+        引数:
             path: 文字起こし対象の音声ファイル。
 
-        Returns:
+        戻り値:
             開始時刻の昇順に並んだ `Segment` のリスト。
 
-        Raises:
+        例外:
             SttError: ファイルが不正、またはプロバイダ呼び出しに失敗した場合。
         """
