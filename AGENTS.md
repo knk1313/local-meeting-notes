@@ -23,11 +23,11 @@
 | Lint | `pnpm lint` |
 | ビルド結果のプレビュー | `pnpm preview` |
 
-バックエンドの作業は `backend/` で行う。仮想環境は `backend/.venv`。
+バックエンドの作業は `backend/` で行う。仮想環境は `backend/venv`。
 
 | 用途 | コマンド |
 |---|---|
-| 仮想環境の有効化 | `source .venv/bin/activate` |
+| 仮想環境の有効化 | `source venv/bin/activate` |
 | 依存インストール | `pip install -r requirements.txt` |
 
 ## git 操作
