@@ -1,0 +1,23 @@
+name: PR Closed GIF
+
+on:
+  pull_request:
+    types: [closed]
+
+jobs:
+  comment-gif:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Create comment
+        uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: 'Thank you for your contribution! 🎉\n\n![Spinning cat](https://media.giphy.com/media/1OrIIOIcRTDaNidc5p/giphy.gif)'
+            })
