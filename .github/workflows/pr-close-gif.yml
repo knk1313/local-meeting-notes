@@ -20,5 +20,5 @@ jobs:
               issue_number: context.issue.number,
               owner: context.repo.owner,
               repo: context.repo.repo,
-              body: 'Thank you for your contribution! 🎉\n\n![Spinning cat](https://media.giphy.com/media/1OrIIOIcRTDaNidc5p/giphy.gif)'
+              body: 'Thank you for your contribution! 🎉\n\n![Spinning cat](https://media.giphy.com/media/1OrIIOIcRTDaNidc5p/200w.gif)'
             })
