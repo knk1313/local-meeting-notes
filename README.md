@@ -97,6 +97,7 @@ tags: [meeting, project-...]
 
 バックエンドの依存関係をインストールし、リポジトリ直下の `.env` に
 `OPENAI_API_KEY`、`ANTHROPIC_API_KEY`、`CLAUDE_MODEL` を設定してから実行する。
+Identity-linked API keyを使う場合は、`ANTHROPIC_WORKSPACE_ID` も設定する。
 
 ```sh
 cd backend

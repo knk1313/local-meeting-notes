@@ -71,6 +71,7 @@ class ClaudeMeetingAnalyzer(MeetingAnalyzer):
         *,
         model: str,
         client: Anthropic | None = None,
+        workspace_id: str | None = None,
         prompt_path: Path = PROMPT_PATH,
     ) -> None:
         """分析器を初期化する。"""
@@ -78,7 +79,7 @@ class ClaudeMeetingAnalyzer(MeetingAnalyzer):
             raise ValueError("Claudeのモデル名を指定してください。")
 
         self._model = model
-        self._client = client if client is not None else Anthropic()
+        self._client = client if client is not None else _create_client(workspace_id)
         self._prompt_path = prompt_path
 
     def analyze(self, transcript: str) -> MeetingAnalysis:
@@ -96,6 +97,11 @@ class ClaudeMeetingAnalyzer(MeetingAnalyzer):
                 tool_choice={"type": "tool", "name": TOOL_NAME},
             )
         except APIError as exc:
+            if "anthropic-workspace-id is required" in str(exc):
+                raise LlmError(
+                    "このANTHROPIC_API_KEYにはWorkspace IDが必要です。"
+                    " .env に ANTHROPIC_WORKSPACE_ID を設定してください。"
+                ) from exc
             raise LlmError("Claudeによる会議分析に失敗しました。") from exc
 
         return _to_meeting_analysis(response)
@@ -107,7 +113,17 @@ def create_default_analyzer() -> ClaudeMeetingAnalyzer:
         raise LlmError("ANTHROPIC_API_KEY が設定されていません。")
     if not settings.claude_model:
         raise LlmError("CLAUDE_MODEL が設定されていません。")
-    return ClaudeMeetingAnalyzer(model=settings.claude_model)
+    return ClaudeMeetingAnalyzer(
+        model=settings.claude_model,
+        workspace_id=settings.anthropic_workspace_id,
+    )
+
+
+def _create_client(workspace_id: str | None) -> Anthropic:
+    """Workspace IDがある場合だけ、Claude APIの対象Workspaceを指定する。"""
+    if not workspace_id:
+        return Anthropic()
+    return Anthropic(default_headers={"anthropic-workspace-id": workspace_id})
 
 
 def _load_prompt(path: Path, transcript: str) -> str:
