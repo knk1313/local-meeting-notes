@@ -93,6 +93,27 @@ tags: [meeting, project-...]
 [話者B] ...
 ```
 
+## 音声ファイルから会議ノートを生成する
+
+バックエンドの依存関係をインストールし、リポジトリ直下の `.env` に
+`OPENAI_API_KEY`、`ANTHROPIC_API_KEY`、`CLAUDE_MODEL` を設定してから実行する。
+
+```sh
+cd backend
+source .venv/bin/activate
+python -m app.cli ../data/meeting.m4a --title "定例MTG" --participant "田中" --tag project-a
+```
+
+`NOTES_DIR`（未指定ならリポジトリ直下の `notes/`）にMarkdownファイルが保存される。
+従来の `start` を付ける形式も利用できる。
+
+```sh
+python -m app start ../data/meeting.m4a --keep-transcript
+```
+
+`--keep-transcript` を付けると、Markdownに含まれる文字起こしに加えて、デバッグ用の
+`.transcript.txt` ファイルも同じディレクトリに保存する。元の音声ファイルは変更しない。
+
 ## 技術スタック（方向性）
 
 | 領域 | 選定（方向性） |
