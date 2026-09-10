@@ -1,5 +1,6 @@
 import AVFoundation
 import CoreMedia
+import CoreGraphics
 import Foundation
 import ScreenCaptureKit
 
@@ -9,6 +10,8 @@ enum RecorderError: LocalizedError {
     case invalidArguments(String)
     case unavailableMacOS
     case noDisplay
+    case microphonePermissionDenied
+    case screenRecordingPermissionDenied
 
     var errorDescription: String? {
         switch self {
@@ -18,6 +21,10 @@ enum RecorderError: LocalizedError {
             return "この録音機能にはmacOS 15以降が必要です。"
         case .noDisplay:
             return "録音対象のディスプレイを取得できません。"
+        case .microphonePermissionDenied:
+            return "マイクへのアクセスが許可されていません。システム設定 > プライバシーとセキュリティ > マイクで、使用中のターミナルを許可してから再実行してください。"
+        case .screenRecordingPermissionDenied:
+            return "画面収録へのアクセスが許可されていません。システム設定 > プライバシーとセキュリティ > 画面収録とシステムオーディオ録音で、使用中のターミナルを許可してから再実行してください。"
         }
     }
 }
@@ -264,6 +271,9 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
     }
 
     func start() async throws {
+        try await ensureMicrophonePermission()
+        try ensureScreenRecordingPermission()
+
         let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
         guard let display = content.displays.first else {
             throw RecorderError.noDisplay
@@ -282,6 +292,28 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
         self.stream = stream
         try await stream.startCapture()
         print("録音を開始しました。Ctrl+Cで停止します。")
+    }
+
+    private func ensureMicrophonePermission() async throws {
+        switch AVCaptureDevice.authorizationStatus(for: .audio) {
+        case .authorized:
+            return
+        case .notDetermined:
+            guard await AVCaptureDevice.requestAccess(for: .audio) else {
+                throw RecorderError.microphonePermissionDenied
+            }
+        case .denied, .restricted:
+            throw RecorderError.microphonePermissionDenied
+        @unknown default:
+            throw RecorderError.microphonePermissionDenied
+        }
+    }
+
+    private func ensureScreenRecordingPermission() throws {
+        guard CGPreflightScreenCaptureAccess() else {
+            CGRequestScreenCaptureAccess()
+            throw RecorderError.screenRecordingPermissionDenied
+        }
     }
 
     func stop() async {
