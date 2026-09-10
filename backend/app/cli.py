@@ -45,8 +45,7 @@ def build_record_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=Path("data/recordings"),
-        help="音声チャンクの出力先（既定: data/recordings）",
+        help="音声チャンクの出力先（未指定時は data/recordings_YYYYMMDDHHMM）",
     )
     parser.add_argument(
         "--chunk-seconds",
@@ -151,12 +150,18 @@ def run_transcribe_directory(
 
 def run_record(args: argparse.Namespace, *, recorder: MacOsAudioRecorder | None = None) -> int:
     """macOS録音を開始し、生成した音声チャンクを指定先へ保存する。"""
-    output_dir = args.output_dir.expanduser()
-    if not output_dir.is_absolute():
-        output_dir = PROJECT_ROOT / output_dir
+    output_dir = _resolve_recording_output_dir(args.output_dir)
 
     print(f"録音チャンクの出力先: {output_dir}")
     return (recorder or MacOsAudioRecorder()).record(output_dir, args.chunk_seconds)
+
+
+def _resolve_recording_output_dir(output_dir: Path | None) -> Path:
+    """録音出力先を解決し、未指定時は開始日時付きのディレクトリ名を生成する。"""
+    if output_dir is not None:
+        return output_dir.expanduser()
+    directory_name = datetime.now().strftime("recordings_%Y%m%d%H%M")
+    return PROJECT_ROOT / "data" / directory_name
 
 
 def _write_analysis_result(

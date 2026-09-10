@@ -81,19 +81,30 @@ class CliTest(unittest.TestCase):
     def test_record_parser_uses_default_chunk_settings(self) -> None:
         """録音コマンドは既定の出力先とチャンク長を持つ。"""
         args = build_record_parser().parse_args([])
-        self.assertEqual(args.output_dir, Path("data/recordings"))
+        self.assertIsNone(args.output_dir)
         self.assertEqual(args.chunk_seconds, 15)
 
-    def test_run_record_resolves_default_output_below_project_root(self) -> None:
-        """既定の録音出力先をリポジトリ直下のdata/recordingsへ解決する。"""
+    def test_run_record_creates_timestamped_output_below_project_root(self) -> None:
+        """既定の録音出力先をリポジトリ直下の日時付きディレクトリへ解決する。"""
         recorder = FakeRecorder()
-        args = argparse.Namespace(output_dir=Path("data/recordings"), chunk_seconds=15)
+        args = argparse.Namespace(output_dir=None, chunk_seconds=15)
 
         exit_code = run_record(args, recorder=recorder)
 
         self.assertEqual(exit_code, 0)
-        self.assertEqual(recorder.output_dir, Path(__file__).resolve().parents[2] / "data/recordings")
+        self.assertIsNotNone(recorder.output_dir)
+        self.assertEqual(recorder.output_dir.parent, Path(__file__).resolve().parents[2] / "data")
+        self.assertRegex(recorder.output_dir.name, r"^recordings_\d{12}$")
         self.assertEqual(recorder.chunk_seconds, 15)
+
+    def test_run_record_keeps_explicit_relative_output_path(self) -> None:
+        """明示指定した出力先は実行ディレクトリからの相対パスとして扱う。"""
+        recorder = FakeRecorder()
+        args = argparse.Namespace(output_dir=Path("../data/recordings_test"), chunk_seconds=15)
+
+        run_record(args, recorder=recorder)
+
+        self.assertEqual(recorder.output_dir, Path("../data/recordings_test"))
 
     def test_run_pipeline_writes_note_and_debug_transcript(self) -> None:
         """API層を差し替え、一気通貫でMarkdownとデバッグ用文字起こしを保存できる。"""
