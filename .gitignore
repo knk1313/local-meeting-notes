@@ -33,6 +33,12 @@ audio/
 recordings/
 !backend/app/audio/
 !backend/app/audio/**
+backend/app/audio/__pycache__/
+backend/app/audio/**/*.pyc
+
+# --- 生成された会議ノート ---
+notes/*
+!notes/.gitkeep
 
 # --- エディタ / OS ---
 .vscode/*

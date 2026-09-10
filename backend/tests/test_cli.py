@@ -7,7 +7,13 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from app.cli import build_record_parser, format_transcript, run_pipeline, run_record
+from app.cli import (
+    build_record_parser,
+    format_transcript,
+    run_pipeline,
+    run_record,
+    run_transcribe_directory,
+)
 from app.llm import MeetingAnalysis, Task
 from app.stt import Segment, SttProvider
 
@@ -21,6 +27,18 @@ class FakeSttProvider(SttProvider):
             Segment(speaker="A", start=0.0, end=1.25, text="次回までに資料を作成します。"),
             Segment(speaker="B", start=1.5, end=2.0, text="確認しました。"),
         ]
+
+
+class DirectoryFakeSttProvider(SttProvider):
+    """呼び出し順を確認できるテスト用文字起こしプロバイダ。"""
+
+    def __init__(self) -> None:
+        self.paths: list[Path] = []
+
+    def transcribe(self, path: Path) -> list[Segment]:
+        """チャンクごとに固定の文字起こし結果を返す。"""
+        self.paths.append(path)
+        return [Segment(speaker="A", start=1.0, end=2.0, text=path.stem)]
 
 
 class FakeAnalyzer:
@@ -93,6 +111,34 @@ class CliTest(unittest.TestCase):
             self.assertTrue(output_path.is_file())
             self.assertIn("title: \"定例MTG\"", output_path.read_text(encoding="utf-8"))
             self.assertTrue(output_path.with_suffix(".transcript.txt").is_file())
+
+    def test_run_transcribe_directory_transcribes_all_chunks_in_order(self) -> None:
+        """連番のWAVチャンクを順に文字起こしし、時刻を会議全体の時刻へ補正する。"""
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            recordings_dir = Path(temporary_directory) / "recordings"
+            recordings_dir.mkdir()
+            first_chunk = recordings_dir / "chunk-00001.wav"
+            second_chunk = recordings_dir / "chunk-00002.wav"
+            first_chunk.write_bytes(b"test")
+            second_chunk.write_bytes(b"test")
+            notes_dir = Path(temporary_directory) / "notes"
+            args = argparse.Namespace(
+                recordings_dir=recordings_dir,
+                title="録音テスト",
+                participants=[],
+                tags=[],
+                notes_dir=notes_dir,
+                keep_transcript=False,
+                chunk_seconds=15,
+            )
+            provider = DirectoryFakeSttProvider()
+
+            output_path = run_transcribe_directory(args, stt_provider=provider, analyzer=FakeAnalyzer())
+
+            self.assertEqual(provider.paths, [first_chunk, second_chunk])
+            content = output_path.read_text(encoding="utf-8")
+            self.assertIn("[A] 1.00s–2.00s: chunk-00001", content)
+            self.assertIn("[A] 16.00s–17.00s: chunk-00002", content)
 
 
 if __name__ == "__main__":

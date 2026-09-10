@@ -128,6 +128,16 @@ source .venv/bin/activate
 python -m app record
 ```
 
+既定ではリポジトリ直下の`data/recordings/`へ、15秒ごとのWAVチャンクを保存する。`Ctrl+C`で録音を停止する。
+
+既存の録音チャンクで文字起こし・要約・Markdown出力を検証する場合は、次のコマンドを使う。
+
+```sh
+python -m app transcribe-dir ../data/recordings_202609101830 --title "録音テスト202609101830"
+```
+
+`chunk-00001.wav`から連番順にすべてSTTへ送り、各チャンクの時刻を15秒ずつ補正して1つの会議ノートへまとめる。録音時のチャンク長が異なる場合は、`--chunk-seconds`で指定する。
+
 ## 技術スタック（方向性）
 
 | 領域 | 選定（方向性） |
