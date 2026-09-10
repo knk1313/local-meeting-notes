@@ -119,11 +119,6 @@ python -m app.cli ../data/meeting.m4a --title "定例MTG" --participant "田中"
 ```
 
 `NOTES_DIR`（未指定ならリポジトリ直下の `notes/`）にMarkdownファイルが保存される。
-従来の `start` を付ける形式も利用できる。
-
-```sh
-python -m app start ../data/meeting.m4a --keep-transcript
-```
 
 `--keep-transcript` を付けると、Markdownに含まれる文字起こしに加えて、デバッグ用の
 `.transcript.txt` ファイルも同じディレクトリに保存する。元の音声ファイルは変更しない。
@@ -136,18 +131,12 @@ macOS 15以降では、Macのシステム音声と既定マイクをミックス
 ```sh
 cd backend
 source .venv/bin/activate
-python -m app record
+python -m app record --title "定例MTG" --participant "田中" --tag project-a --keep-transcript
 ```
 
 既定ではリポジトリ直下の`data/recordings_YYYYMMDDHHMM/`へ保存する。録音全体は`recording.wav`として1本にまとめ、逐次文字起こし用の15秒ごとのWAVチャンクは`chunks/`へ分けて保存する。`Ctrl+C`で録音を停止する。
 
-既存の録音チャンクで文字起こし・要約・Markdown出力を検証する場合は、次のコマンドを使う。
-
-```sh
-python -m app transcribe-dir ../data/recordings_202609101830 --title "録音テスト202609101830"
-```
-
-`chunk-00001.wav`から連番順にすべてSTTへ送り、各チャンクの時刻を15秒ずつ補正して1つの会議ノートへまとめる。録音時のチャンク長が異なる場合は、`--chunk-seconds`で指定する。
+チャンクの長さは`.env`の`RECORDING_CHUNK_SECONDS`で設定する（既定: 15秒）。録音先・ノート出力先はそれぞれ`data/`・`NOTES_DIR`に固定する。
 
 ## 技術スタック（方向性）
 

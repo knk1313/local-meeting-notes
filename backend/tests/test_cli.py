@@ -5,16 +5,18 @@ from __future__ import annotations
 import argparse
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
+from unittest.mock import patch
 
 from app.cli import (
     build_record_parser,
     format_transcript,
     run_pipeline,
     run_record,
-    run_transcribe_directory,
 )
 from app.llm import MeetingAnalysis, Task
+from app.settings import settings
 from app.stt import Segment, SttProvider
 
 
@@ -27,18 +29,6 @@ class FakeSttProvider(SttProvider):
             Segment(speaker="A", start=0.0, end=1.25, text="次回までに資料を作成します。"),
             Segment(speaker="B", start=1.5, end=2.0, text="確認しました。"),
         ]
-
-
-class DirectoryFakeSttProvider(SttProvider):
-    """呼び出し順を確認できるテスト用文字起こしプロバイダ。"""
-
-    def __init__(self) -> None:
-        self.paths: list[Path] = []
-
-    def transcribe(self, path: Path) -> list[Segment]:
-        """チャンクごとに固定の文字起こし結果を返す。"""
-        self.paths.append(path)
-        return [Segment(speaker="A", start=1.0, end=2.0, text=path.stem)]
 
 
 class FakeAnalyzer:
@@ -78,33 +68,29 @@ class CliTest(unittest.TestCase):
         )
         self.assertEqual(transcript, "[A] 0.00s–1.25s: 発言です")
 
-    def test_record_parser_uses_default_chunk_settings(self) -> None:
-        """録音コマンドは既定の出力先とチャンク長を持つ。"""
-        args = build_record_parser().parse_args([])
-        self.assertIsNone(args.output_dir)
-        self.assertEqual(args.chunk_seconds, 15)
+    def test_record_parser_accepts_meeting_metadata(self) -> None:
+        """録音コマンドは会議ノート用のメタデータを受け付ける。"""
+        args = build_record_parser().parse_args(
+            ["--title", "定例MTG", "--participant", "田中", "--tag", "project-a", "--keep-transcript"]
+        )
+        self.assertEqual(args.title, "定例MTG")
+        self.assertEqual(args.participants, ["田中"])
+        self.assertEqual(args.tags, ["project-a"])
+        self.assertTrue(args.keep_transcript)
 
     def test_run_record_resolves_timestamped_output_below_project_root(self) -> None:
         """既定の録音出力先をリポジトリ直下の日時付きディレクトリへ解決する。"""
         recorder = FakeRecorder()
-        args = argparse.Namespace(output_dir=None, chunk_seconds=15)
+        args = argparse.Namespace(title=None, participants=[], tags=[], keep_transcript=False)
 
-        exit_code = run_record(args, recorder=recorder)
+        with patch("app.cli.settings", replace(settings, recording_chunk_seconds=20)):
+            exit_code = run_record(args, recorder=recorder)
 
         self.assertEqual(exit_code, 0)
         self.assertIsNotNone(recorder.output_dir)
         self.assertEqual(recorder.output_dir.parent, Path(__file__).resolve().parents[2] / "data")
         self.assertRegex(recorder.output_dir.name, r"^recordings_\d{12}$")
-        self.assertEqual(recorder.chunk_seconds, 15)
-
-    def test_run_record_keeps_explicit_relative_output_path(self) -> None:
-        """明示指定した出力先は実行ディレクトリからの相対パスとして扱う。"""
-        recorder = FakeRecorder()
-        args = argparse.Namespace(output_dir=Path("../data/recordings_test"), chunk_seconds=15)
-
-        run_record(args, recorder=recorder)
-
-        self.assertEqual(recorder.output_dir, Path("../data/recordings_test"))
+        self.assertEqual(recorder.chunk_seconds, 20)
 
     def test_run_pipeline_writes_note_and_debug_transcript(self) -> None:
         """API層を差し替え、一気通貫でMarkdownとデバッグ用文字起こしを保存できる。"""
@@ -115,44 +101,17 @@ class CliTest(unittest.TestCase):
                 title="定例MTG",
                 participants=["田中"],
                 tags=["project-a"],
-                notes_dir=notes_dir,
                 keep_transcript=True,
             )
-            output_path = run_pipeline(args, stt_provider=FakeSttProvider(), analyzer=FakeAnalyzer())
+            output_path = run_pipeline(
+                args,
+                stt_provider=FakeSttProvider(),
+                analyzer=FakeAnalyzer(),
+                notes_dir=notes_dir,
+            )
             self.assertTrue(output_path.is_file())
             self.assertIn("title: \"定例MTG\"", output_path.read_text(encoding="utf-8"))
             self.assertTrue(output_path.with_suffix(".transcript.txt").is_file())
-
-    def test_run_transcribe_directory_transcribes_all_chunks_in_order(self) -> None:
-        """連番のWAVチャンクを順に文字起こしし、時刻を会議全体の時刻へ補正する。"""
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            recordings_dir = Path(temporary_directory) / "recordings"
-            recordings_dir.mkdir()
-            chunks_dir = recordings_dir / "chunks"
-            chunks_dir.mkdir()
-            first_chunk = chunks_dir / "chunk-00001.wav"
-            second_chunk = chunks_dir / "chunk-00002.wav"
-            first_chunk.write_bytes(b"test")
-            second_chunk.write_bytes(b"test")
-            notes_dir = Path(temporary_directory) / "notes"
-            args = argparse.Namespace(
-                recordings_dir=recordings_dir,
-                title="録音テスト",
-                participants=[],
-                tags=[],
-                notes_dir=notes_dir,
-                keep_transcript=False,
-                chunk_seconds=15,
-            )
-            provider = DirectoryFakeSttProvider()
-
-            output_path = run_transcribe_directory(args, stt_provider=provider, analyzer=FakeAnalyzer())
-
-            self.assertEqual(provider.paths, [first_chunk, second_chunk])
-            content = output_path.read_text(encoding="utf-8")
-            self.assertIn("[A] 1.00s–2.00s: chunk-00001", content)
-            self.assertIn("[A] 16.00s–17.00s: chunk-00002", content)
-
 
 if __name__ == "__main__":
     unittest.main()
