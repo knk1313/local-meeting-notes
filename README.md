@@ -18,43 +18,45 @@ Notta などの文字起こしSaaSは、
 
 ## ゴール
 
-1. 会議中〜終了後に、音声をリアルタイムで文字起こしする
-2. 文字起こし結果をLLMに渡し、要約とタスクに分解する
-3. 会議ごとにメタ情報付きで出力する
-4. 出力先をGitリポジトリとして管理し、pushまで自動化する
-5. STT/LLMプロバイダを抽象化し、固定のベンダーロックインを避ける
+1. Macで再生されるシステム音声とマイク音声を録音する
+2. 録音中に音声を短いチャンクへ分割し、準リアルタイムで文字起こしする
+3. 会議終了後に文字起こし結果をLLMへ渡し、要約とタスクに分解する
+4. 会議ごとにメタ情報付きで出力する
+5. 出力先をGitリポジトリとして管理できるようにする
+6. STT/LLMプロバイダを抽象化し、固定のベンダーロックインを避ける
 
 ## 全体アーキテクチャ
 
 ```mermaid
 flowchart LR
-    A[マイク音声] --> C[音声キャプチャ層]
-    B["システム音声<br/>(Mac: BlackHole等)"] --> C
-    C --> D["チャンク分割<br/>(15〜30秒単位)"]
-    D --> E["STTプロバイダ抽象化層<br/>(OpenAI / Google)"]
-    E --> F["文字起こし結果<br/>(話者ラベル付き)"]
-    F --> G[FastAPI Backend]
-    G --> H["ブラウザUI<br/>(準リアルタイム表示)"]
-    G --> I[Claude API]
+    A[マイク音声] --> C["macOS録音層<br/>(ScreenCaptureKit)"]
+    B["Macのシステム音声<br/>(Zoom / Meet / Teams等)"] --> C
+    C --> D["チャンク分割<br/>(15〜30秒)"]
+    D --> E["STTプロバイダ抽象化層<br/>(OpenAI)"]
+    E --> F["文字起こし結果<br/>(話者ラベル付き・逐次追加)"]
+    F --> G["ローカル画面 / CLIへ進捗表示"]
+    F --> I["会議終了後にClaude APIへ送信"]
     I --> J[要約 + タスク抽出]
     J --> K["Markdown生成<br/>(1会議1ファイル)"]
-    K --> L[Git commit / push]
+    K --> L[notes/]
 ```
 
-処理方式はストリーミングではなく、**チャンク分割バッチ**を採用する。実装コストを抑えつつ、体感としてはほぼリアルタイムの文字起こしを実現する。
+音声は15〜30秒程度のチャンクへ分割し、録音中に順次STTへ渡す。これにより、録音を継続しながら準リアルタイムで文字起こし結果を追加する。会議終了後、全チャンクの文字起こしをまとめてClaude APIへ渡し、要約・タスク抽出とMarkdown出力を行う。
 
 ## 主要機能要件
 
 ### 1. 音声キャプチャ
-- マイク音声 + システム音声（相手の声）の両方に対応
-- 15〜30秒単位でチャンク分割し、逐次処理
+- MVPはmacOS 15以降を対象とする
+- Macで再生される全システム音声（Zoom / Google Meet / Microsoft Teams等）と、既定のマイク入力を1本の音声チャンクへミックスする
+- macOS標準の`ScreenCaptureKit`を利用する
+- 録音中に15〜30秒ごとの音声チャンクを生成し、文字起こしキューへ順次渡す
 
 ### 2. 文字起こし（STT）
-- プロバイダを抽象化し、OpenAI / Google Speech-to-Text を切り替え可能にする
+- プロバイダを抽象化し、将来OpenAI / Google Speech-to-Text を切り替え可能にする
 - 話者分離（diarization）に対応
   - 第一候補: OpenAI `gpt-4o-transcribe-diarize`
   - 代替: Google Speech-to-Text の `speaker_diarization_config`
-- 音声ファイルは処理後に破棄する（デフォルト）。保持したい場合はオプションで切替可能にする
+- OpenAI STTへ渡す各音声チャンクは25MB以下にする
 
 ### 3. タスク分解（LLM）
 - Claude API に文字起こし全文を渡し、以下を生成
@@ -70,6 +72,17 @@ flowchart LR
 ### 5. Git連携
 - 出力先ディレクトリをGitリポジトリとして管理
 - ローカルコミット後、可能であればリモートへのpushまで自動化する
+
+## 将来構想: 会議ノートを起点にしたAIアシスト
+
+蓄積したMarkdown会議ノートに対して、過去の会議内容を質問したり、会話しながらノートを修正したりできるようにする。
+
+- ノート横断で質問し、回答とあわせて根拠となる会議ノート・該当箇所を示す
+- 「この会議で決まった担当は?」「前回からの宿題は?」のような質問に答える
+- 聞き間違いの訂正やタスクの更新を、変更案の確認後にMarkdownへ反映する
+- 人名・固有名詞などの訂正を辞書として蓄積し、以降の文字起こし・要約プロンプトへ渡して精度を改善する
+
+モデル自体を再学習しなくても、訂正履歴と会議ノートをコンテキストとして与えることで、個人・チームの運用に適応していく仕組みを目指す。
 
 ## 出力フォーマット例
 
@@ -115,12 +128,34 @@ python -m app start ../data/meeting.m4a --keep-transcript
 `--keep-transcript` を付けると、Markdownに含まれる文字起こしに加えて、デバッグ用の
 `.transcript.txt` ファイルも同じディレクトリに保存する。元の音声ファイルは変更しない。
 
+## macOSで録音する
+
+macOS 15以降では、Macのシステム音声と既定マイクをミックスし、WAVチャンクとして保存できる。
+初回は、ターミナルにマイク・画面収録の権限を許可する。
+
+```sh
+cd backend
+source .venv/bin/activate
+python -m app record
+```
+
+既定ではリポジトリ直下の`data/recordings_YYYYMMDDHHMM/`へ、15秒ごとのWAVチャンクを保存する。`Ctrl+C`で録音を停止する。
+
+既存の録音チャンクで文字起こし・要約・Markdown出力を検証する場合は、次のコマンドを使う。
+
+```sh
+python -m app transcribe-dir ../data/recordings_202609101830 --title "録音テスト202609101830"
+```
+
+`chunk-00001.wav`から連番順にすべてSTTへ送り、各チャンクの時刻を15秒ずつ補正して1つの会議ノートへまとめる。録音時のチャンク長が異なる場合は、`--chunk-seconds`で指定する。
+
 ## 技術スタック（方向性）
 
 | 領域 | 選定（方向性） |
 |---|---|
-| Backend | Python (FastAPI) |
-| Frontend | React + TypeScript (Vite) |
+| Backend | Python（現状はCLI。ローカルAPI化は後続フェーズ） |
+| 録音 | macOS標準Framework（ScreenCaptureKit） |
+| Frontend | React + TypeScript (Vite、録音操作用UIは後続フェーズ) |
 | パッケージマネージャ (Frontend) | pnpm |
 | STT | OpenAI API / Google Speech-to-Text |
 | タスク分解LLM | Claude API |
@@ -150,7 +185,3 @@ local-meeting-notes/
 ├── .env.example
 └── README.md
 ```
-
-## セットアップ注意事項（Mac）
-
-システム音声（会議相手の声）を録音するには、標準のOS機能だけでは取得できないため、BlackHole 等の仮想オーディオデバイスを別途インストール・設定する必要がある。
