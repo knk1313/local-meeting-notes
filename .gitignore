@@ -13,6 +13,7 @@ venv/
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
+backend/.build/
 
 # --- Node / フロントエンド ---
 node_modules/
@@ -30,6 +31,8 @@ dist-ssr/
 *.webm
 audio/
 recordings/
+!backend/app/audio/
+!backend/app/audio/**
 
 # --- エディタ / OS ---
 .vscode/*

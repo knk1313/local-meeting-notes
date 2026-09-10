@@ -8,6 +8,7 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Sequence
 
+from app.audio import MacOsAudioRecorder
 from app.llm import MeetingAnalyzer, create_default_analyzer
 from app.output import MeetingMetadata, write_meeting_note
 from app.settings import PROJECT_ROOT, settings
@@ -31,6 +32,26 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--notes-dir", type=Path, help="出力先ディレクトリ（未指定時は NOTES_DIR）")
     parser.add_argument(
         "--keep-transcript", action="store_true", help="デバッグ用に文字起こしだけの .transcript.txt も保存する"
+    )
+    return parser
+
+
+def build_record_parser() -> argparse.ArgumentParser:
+    """macOS録音コマンド用の引数パーサーを作成する。"""
+    parser = argparse.ArgumentParser(
+        description="Macのシステム音声と既定マイクを録音し、音声チャンクを保存します。"
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=Path("data/recordings"),
+        help="音声チャンクの出力先（既定: data/recordings）",
+    )
+    parser.add_argument(
+        "--chunk-seconds",
+        type=int,
+        default=15,
+        help="音声チャンクの長さ（秒、既定: 15）",
     )
     return parser
 
@@ -99,6 +120,16 @@ def run_pipeline(
     return output_path
 
 
+def run_record(args: argparse.Namespace, *, recorder: MacOsAudioRecorder | None = None) -> int:
+    """macOS録音を開始し、生成した音声チャンクを指定先へ保存する。"""
+    output_dir = args.output_dir.expanduser()
+    if not output_dir.is_absolute():
+        output_dir = PROJECT_ROOT / output_dir
+
+    print(f"録音チャンクの出力先: {output_dir}")
+    return (recorder or MacOsAudioRecorder()).record(output_dir, args.chunk_seconds)
+
+
 def _format_timestamp_range(start: float | None, end: float | None) -> str:
     """開始・終了秒を表示用の時刻範囲に変換する。"""
     if start is None and end is None:
@@ -111,6 +142,9 @@ def _format_timestamp_range(start: float | None, end: float | None) -> str:
 def main(argv: Sequence[str] | None = None) -> int:
     """CLIを実行する。``start`` は従来の呼び出し方との互換エイリアス。"""
     arguments = list(sys.argv[1:] if argv is None else argv)
+    if arguments[:1] == ["record"]:
+        args = build_record_parser().parse_args(arguments[1:])
+        return run_record(args)
     if arguments[:1] == ["start"]:
         arguments.pop(0)
 
