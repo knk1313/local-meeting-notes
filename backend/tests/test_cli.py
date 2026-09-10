@@ -84,7 +84,7 @@ class CliTest(unittest.TestCase):
         self.assertIsNone(args.output_dir)
         self.assertEqual(args.chunk_seconds, 15)
 
-    def test_run_record_creates_timestamped_output_below_project_root(self) -> None:
+    def test_run_record_resolves_timestamped_output_below_project_root(self) -> None:
         """既定の録音出力先をリポジトリ直下の日時付きディレクトリへ解決する。"""
         recorder = FakeRecorder()
         args = argparse.Namespace(output_dir=None, chunk_seconds=15)
@@ -128,8 +128,10 @@ class CliTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary_directory:
             recordings_dir = Path(temporary_directory) / "recordings"
             recordings_dir.mkdir()
-            first_chunk = recordings_dir / "chunk-00001.wav"
-            second_chunk = recordings_dir / "chunk-00002.wav"
+            chunks_dir = recordings_dir / "chunks"
+            chunks_dir.mkdir()
+            first_chunk = chunks_dir / "chunk-00001.wav"
+            second_chunk = chunks_dir / "chunk-00002.wav"
             first_chunk.write_bytes(b"test")
             second_chunk.write_bytes(b"test")
             notes_dir = Path(temporary_directory) / "notes"

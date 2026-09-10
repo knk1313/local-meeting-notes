@@ -40,12 +40,12 @@ def build_parser() -> argparse.ArgumentParser:
 def build_record_parser() -> argparse.ArgumentParser:
     """macOS録音コマンド用の引数パーサーを作成する。"""
     parser = argparse.ArgumentParser(
-        description="Macのシステム音声と既定マイクを録音し、音声チャンクを保存します。"
+        description="Macのシステム音声と既定マイクを録音し、会議全体のWAVとSTT用チャンクを保存します。"
     )
     parser.add_argument(
         "--output-dir",
         type=Path,
-        help="音声チャンクの出力先（未指定時は data/recordings_YYYYMMDDHHMM）",
+        help="録音セッションの出力先（未指定時は data/recordings_YYYYMMDDHHMM）",
     )
     parser.add_argument(
         "--chunk-seconds",
@@ -149,10 +149,10 @@ def run_transcribe_directory(
 
 
 def run_record(args: argparse.Namespace, *, recorder: MacOsAudioRecorder | None = None) -> int:
-    """macOS録音を開始し、生成した音声チャンクを指定先へ保存する。"""
+    """macOS録音を開始し、会議全体の音声とSTT用チャンクを指定先へ保存する。"""
     output_dir = _resolve_recording_output_dir(args.output_dir)
 
-    print(f"録音チャンクの出力先: {output_dir}")
+    print(f"録音セッションの出力先: {output_dir}")
     return (recorder or MacOsAudioRecorder()).record(output_dir, args.chunk_seconds)
 
 
@@ -195,10 +195,12 @@ def _write_analysis_result(
 
 
 def _find_chunk_paths(recordings_dir: Path) -> list[Path]:
-    """録音ディレクトリから時系列順のWAVチャンクを取得する。"""
+    """録音ディレクトリから時系列順のWAVチャンクを取得する。旧配置も読み込む。"""
     if not recordings_dir.is_dir():
         raise RuntimeError(f"録音ディレクトリが見つかりません: {recordings_dir}")
-    return sorted(path for path in recordings_dir.glob("chunk-*.wav") if path.is_file())
+    chunks_dir = recordings_dir / "chunks"
+    search_dir = chunks_dir if chunks_dir.is_dir() else recordings_dir
+    return sorted(path for path in search_dir.glob("chunk-*.wav") if path.is_file())
 
 
 def _offset_segments(segments: list[Segment], offset_seconds: int) -> list[Segment]:

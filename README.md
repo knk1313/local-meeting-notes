@@ -130,7 +130,7 @@ python -m app start ../data/meeting.m4a --keep-transcript
 
 ## macOSで録音する
 
-macOS 15以降では、Macのシステム音声と既定マイクをミックスし、WAVチャンクとして保存できる。
+macOS 15以降では、Macのシステム音声と既定マイクをミックスして録音できる。
 初回は、ターミナルにマイク・画面収録の権限を許可する。
 
 ```sh
@@ -139,7 +139,7 @@ source .venv/bin/activate
 python -m app record
 ```
 
-既定ではリポジトリ直下の`data/recordings_YYYYMMDDHHMM/`へ、15秒ごとのWAVチャンクを保存する。`Ctrl+C`で録音を停止する。
+既定ではリポジトリ直下の`data/recordings_YYYYMMDDHHMM/`へ保存する。録音全体は`recording.wav`として1本にまとめ、逐次文字起こし用の15秒ごとのWAVチャンクは`chunks/`へ分けて保存する。`Ctrl+C`で録音を停止する。
 
 既存の録音チャンクで文字起こし・要約・Markdown出力を検証する場合は、次のコマンドを使う。
 
