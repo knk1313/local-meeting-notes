@@ -5,6 +5,8 @@ import Foundation
 import ScreenCaptureKit
 
 let sampleRate = 48_000.0
+let masterRecordingFilename = "recording.wav"
+let chunksDirectoryName = "chunks"
 
 enum RecorderError: LocalizedError {
     case invalidArguments(String)
@@ -66,8 +68,10 @@ struct RecorderArguments {
 final class ChunkMixer {
     private let lock = NSLock()
     private let outputDirectory: URL
+    private let chunksDirectory: URL
     private let chunkSeconds: Int
     private let framesPerChunk: Int
+    private var masterAudioFile: AVAudioFile?
     private var sessionStartTime: Double?
     private var chunks: [Int: Chunk] = [:]
     private var latestSystemFrame = -1
@@ -80,6 +84,7 @@ final class ChunkMixer {
 
     init(outputDirectory: URL, chunkSeconds: Int) {
         self.outputDirectory = outputDirectory
+        self.chunksDirectory = outputDirectory.appendingPathComponent(chunksDirectoryName, isDirectory: true)
         self.chunkSeconds = chunkSeconds
         self.framesPerChunk = Int(sampleRate) * chunkSeconds
     }
@@ -182,30 +187,59 @@ final class ChunkMixer {
             destination[frame] = max(-1, min(1, (chunk.system[frame] + chunk.microphone[frame]) * 0.5))
         }
 
-        let filename = String(format: "chunk-%05d.wav", index + 1)
-        let outputURL = outputDirectory.appendingPathComponent(filename)
+        writeMasterRecording(buffer, format: format)
+        writeSttChunk(buffer, index: index, format: format)
+    }
+
+    private func writeMasterRecording(_ buffer: AVAudioPCMBuffer, format: AVAudioFormat) {
         do {
-            let audioFile = try AVAudioFile(
-                forWriting: outputURL,
-                settings: format.settings,
-                commonFormat: .pcmFormatFloat32,
-                interleaved: false
-            )
-            try audioFile.write(from: buffer)
-            print("チャンクを書き出しました: \(outputURL.path)")
+            if masterAudioFile == nil {
+                let outputURL = outputDirectory.appendingPathComponent(masterRecordingFilename)
+                masterAudioFile = try AVAudioFile(
+                    forWriting: outputURL,
+                    settings: format.settings,
+                    commonFormat: .pcmFormatFloat32,
+                    interleaved: false
+                )
+            }
+            try masterAudioFile?.write(from: buffer)
         } catch {
-            fputs("チャンクの書き出しに失敗しました: \(error.localizedDescription)\n", stderr)
+            fputs("録音全体ファイルの書き出しに失敗しました: \(error.localizedDescription)\n", stderr)
+        }
+    }
+
+    private func writeSttChunk(_ buffer: AVAudioPCMBuffer, index: Int, format: AVAudioFormat) {
+        let filename = String(format: "chunk-%05d.wav", index + 1)
+        let outputURL = chunksDirectory.appendingPathComponent(filename)
+        let temporaryURL = chunksDirectory.appendingPathComponent(".partial-\(filename)")
+        do {
+            try FileManager.default.createDirectory(at: chunksDirectory, withIntermediateDirectories: true)
+            try? FileManager.default.removeItem(at: temporaryURL)
+            do {
+                let audioFile = try AVAudioFile(
+                    forWriting: temporaryURL,
+                    settings: format.settings,
+                    commonFormat: .pcmFormatFloat32,
+                    interleaved: false
+                )
+                try audioFile.write(from: buffer)
+            }
+            try? FileManager.default.removeItem(at: outputURL)
+            try FileManager.default.moveItem(at: temporaryURL, to: outputURL)
+            print("STT用チャンクを書き出しました: \(outputURL.path)")
+        } catch {
+            try? FileManager.default.removeItem(at: temporaryURL)
+            fputs("STT用チャンクの書き出しに失敗しました: \(error.localizedDescription)\n", stderr)
         }
     }
 
     private func convertToMonoBuffer(_ sampleBuffer: CMSampleBuffer) -> AVAudioPCMBuffer? {
         guard let formatDescription = sampleBuffer.formatDescription,
-              let streamDescription = formatDescription.audioStreamBasicDescription,
-              let sourceFormat = AVAudioFormat(
-                  standardFormatWithSampleRate: streamDescription.mSampleRate,
-                  channels: streamDescription.mChannelsPerFrame
-              )
-        else {
+              let streamDescription = formatDescription.audioStreamBasicDescription else {
+            return nil
+        }
+        var sourceStreamDescription = streamDescription
+        guard let sourceFormat = AVAudioFormat(streamDescription: &sourceStreamDescription) else {
             return nil
         }
 
@@ -219,6 +253,10 @@ final class ChunkMixer {
                 pcmFormat: sourceFormat,
                 bufferListNoCopy: audioBufferList.unsafePointer
             ) else {
+                return nil
+            }
+            guard sourceFrameCount <= sourceBuffer.frameCapacity else {
+                fputs("入力音声バッファのフレーム数が容量を超えたため、このサンプルをスキップします。\\n", stderr)
                 return nil
             }
             sourceBuffer.frameLength = sourceFrameCount

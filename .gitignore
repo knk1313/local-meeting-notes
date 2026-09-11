@@ -20,6 +20,7 @@ node_modules/
 dist/
 dist-ssr/
 *.local
+meeting-recorder-mock.html
 
 # --- 音声ファイル（処理後に破棄する想定だが、保持オプション時の混入を防ぐ） ---
 *.wav
