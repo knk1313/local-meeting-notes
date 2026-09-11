@@ -15,6 +15,8 @@ from pydantic import BaseModel, Field
 
 from app.audio import MacOsAudioRecorder
 from app.cli import run_record
+from app.notes import StoredNote, get_note, list_notes
+from app.settings import settings
 from app.stt import Segment
 
 
@@ -35,6 +37,24 @@ class TranscriptSegmentResponse(BaseModel):
     start: float | None
     end: float | None
     text: str
+
+
+class NoteSummaryResponse(BaseModel):
+    """一覧に表示する保存済み会議ノートの概要。"""
+
+    id: str
+    title: str
+    date: str
+    participants: list[str]
+    tags: list[str]
+    excerpt: str
+    duration_seconds: float | None = None
+
+
+class NoteDetailResponse(NoteSummaryResponse):
+    """Markdown本文まで含む会議ノート。"""
+
+    markdown: str
 
 
 class MeetingResponse(BaseModel):
@@ -195,6 +215,37 @@ app.add_middleware(
 def health() -> dict[str, str]:
     """ローカルAPIの起動確認を返す。"""
     return {"status": "ok"}
+
+
+@app.get("/api/notes", response_model=list[NoteSummaryResponse])
+def list_meeting_notes() -> list[NoteSummaryResponse]:
+    """NOTES_DIRに保存済みの会議ノートを新しい順に返す。"""
+    return [_note_summary(note) for note in list_notes(settings.notes_dir)]
+
+
+@app.get("/api/notes/{note_id}", response_model=NoteDetailResponse)
+def get_meeting_note(note_id: str) -> NoteDetailResponse:
+    """ファイル名のstemを指定して、会議ノートのMarkdown本文を返す。"""
+    try:
+        note = get_note(settings.notes_dir, note_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail="会議ノートを読み込めませんでした。") from exc
+    return NoteDetailResponse(**_note_summary(note).model_dump(), markdown=note.markdown)
+
+
+def _note_summary(note: StoredNote) -> NoteSummaryResponse:
+    """保存済みノートを一覧用のレスポンスへ変換する。"""
+    return NoteSummaryResponse(
+        id=note.id,
+        title=note.title,
+        date=note.date,
+        participants=note.participants,
+        tags=note.tags,
+        excerpt=note.excerpt,
+        duration_seconds=note.duration_seconds,
+    )
 
 
 @app.post("/api/meetings", response_model=MeetingResponse, status_code=201)

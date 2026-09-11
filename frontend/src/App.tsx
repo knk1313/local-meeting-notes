@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
-import { CircleAlert, FileText, LoaderCircle } from 'lucide-react'
-import { Link, Navigate, Outlet, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom'
+import { CircleAlert, LoaderCircle } from 'lucide-react'
+import { Navigate, Outlet, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom'
 import { AiPanels } from './components/AiPanels'
 import { HomeView } from './components/HomeView'
 import { MeetingHeader } from './components/MeetingHeader'
@@ -8,7 +8,6 @@ import { NewMeetingDrawer } from './components/NewMeetingDrawer'
 import { PageHeader } from './components/PageHeader'
 import { Sidebar, type AppPage } from './components/Sidebar'
 import { TranscriptCard } from './components/TranscriptCard'
-import { Card } from './components/ui/Card'
 import { request } from './lib/api'
 import type { Meeting } from './types/meeting'
 import './App.css'
@@ -53,13 +52,8 @@ function LiveMeetingRoute() {
   return <><MeetingHeader meeting={meeting} canStop={Boolean(canStop)} isStopping={stopping} onStop={() => void stopMeeting()} />{error && <p className="form-error page-error"><CircleAlert />{error}</p>}<div className="meeting-grid"><TranscriptCard message={meeting.message} transcript={meeting.transcript} isMeetingActive={Boolean(isActive)} /><AiPanels meeting={meeting} /></div></>
 }
 
-function MeetingDetailRoute() {
-  const { meetingId = '' } = useParams()
-  return <Card className="meeting-detail-card"><FileText /><h2>会議詳細</h2><p>要約・タスク・Markdown本文を表示する会議詳細のルートです。</p><Link to={`/meetings/${meetingId}/live`}>リアルタイム表示を開く</Link></Card>
-}
-
 function App() {
-  return <Routes><Route element={<AppLayout />}><Route path="/" element={<HomeRoute />} /><Route path="/meetings/new" element={<HomeRoute />} /><Route path="/meetings/:meetingId/live" element={<LiveMeetingRoute />} /><Route path="/meetings/:meetingId" element={<MeetingDetailRoute />} /><Route path="*" element={<Navigate to="/" replace />} /></Route></Routes>
+  return <Routes><Route element={<AppLayout />}><Route path="/" element={<HomeRoute />} /><Route path="/meetings/new" element={<HomeRoute />} /><Route path="/meetings/:meetingId/live" element={<LiveMeetingRoute />} /><Route path="*" element={<Navigate to="/" replace />} /></Route></Routes>
 }
 
 export default App
