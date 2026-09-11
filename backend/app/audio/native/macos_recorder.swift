@@ -235,12 +235,11 @@ final class ChunkMixer {
 
     private func convertToMonoBuffer(_ sampleBuffer: CMSampleBuffer) -> AVAudioPCMBuffer? {
         guard let formatDescription = sampleBuffer.formatDescription,
-              let streamDescription = formatDescription.audioStreamBasicDescription,
-              let sourceFormat = AVAudioFormat(
-                  standardFormatWithSampleRate: streamDescription.mSampleRate,
-                  channels: streamDescription.mChannelsPerFrame
-              )
-        else {
+              let streamDescription = formatDescription.audioStreamBasicDescription else {
+            return nil
+        }
+        var sourceStreamDescription = streamDescription
+        guard let sourceFormat = AVAudioFormat(streamDescription: &sourceStreamDescription) else {
             return nil
         }
 
@@ -254,6 +253,10 @@ final class ChunkMixer {
                 pcmFormat: sourceFormat,
                 bufferListNoCopy: audioBufferList.unsafePointer
             ) else {
+                return nil
+            }
+            guard sourceFrameCount <= sourceBuffer.frameCapacity else {
+                fputs("入力音声バッファのフレーム数が容量を超えたため、このサンプルをスキップします。\\n", stderr)
                 return nil
             }
             sourceBuffer.frameLength = sourceFrameCount
