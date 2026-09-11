@@ -11,6 +11,7 @@ from app.stt.base import Segment
 
 ChunkTranscriber = Callable[[Path], list[Segment]]
 StatusCallback = Callable[[str], None]
+SegmentsCallback = Callable[[list[Segment]], None]
 
 
 class IncrementalChunkTranscriber:
@@ -23,12 +24,14 @@ class IncrementalChunkTranscriber:
         chunk_seconds: int,
         transcribe: ChunkTranscriber,
         on_status: StatusCallback | None = None,
+        on_segments: SegmentsCallback | None = None,
     ) -> None:
         """逐次文字起こしセッションを初期化する。"""
         self._chunks_dir = chunks_dir
         self._chunk_seconds = chunk_seconds
         self._transcribe = transcribe
         self._on_status = on_status
+        self._on_segments = on_segments
         self._handled_paths: set[Path] = set()
         self._segments: list[Segment] = []
         self._failed_paths: list[Path] = []
@@ -66,6 +69,8 @@ class IncrementalChunkTranscriber:
             offset = chunk_index * self._chunk_seconds
             adjusted_segments = [_offset_segment(segment, offset) for segment in segments]
             self._segments.extend(adjusted_segments)
+            if self._on_segments is not None and adjusted_segments:
+                self._on_segments(adjusted_segments)
             self._status(f"文字起こしを追加: {path.name}（{len(adjusted_segments)}件）")
 
     def _status(self, message: str) -> None:

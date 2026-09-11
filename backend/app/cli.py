@@ -7,7 +7,7 @@ import sys
 from datetime import date, datetime
 from pathlib import Path
 from threading import Event, Thread
-from typing import Sequence
+from typing import Callable, Sequence
 
 from app.audio import AudioRecorder, MacOsAudioRecorder
 from app.llm import MeetingAnalyzer, create_default_analyzer
@@ -94,11 +94,18 @@ def run_record(
     analyzer: MeetingAnalyzer | None = None,
     notes_dir: Path | None = None,
     poll_seconds: float = 0.25,
+    on_status: Callable[[str], None] | None = None,
+    on_segments: Callable[[list[Segment]], None] | None = None,
 ) -> int:
     """録音中にチャンクを逐次文字起こしし、停止後に会議ノートを保存する。"""
     output_dir = _resolve_recording_output_dir()
     chunks_dir = output_dir / "chunks"
     active_provider = stt_provider
+
+    def report_status(message: str) -> None:
+        print(message)
+        if on_status is not None:
+            on_status(message)
 
     def transcribe_chunk(path: Path) -> list[Segment]:
         nonlocal active_provider
@@ -110,7 +117,8 @@ def run_record(
         chunks_dir,
         chunk_seconds=settings.recording_chunk_seconds,
         transcribe=transcribe_chunk,
-        on_status=print,
+        on_status=report_status,
+        on_segments=on_segments,
     )
     stop_watching = Event()
 
@@ -120,8 +128,8 @@ def run_record(
 
     watcher = Thread(target=watch_chunks, name="incremental-stt", daemon=True)
 
-    print(f"録音セッションの出力先: {output_dir}")
-    print("録音中... 停止すると要約と会議ノートを生成します。")
+    report_status(f"録音セッションの出力先: {output_dir}")
+    report_status("録音中... 停止すると要約と会議ノートを生成します。")
     watcher.start()
     try:
         exit_code = (recorder or MacOsAudioRecorder()).record(output_dir, settings.recording_chunk_seconds)
@@ -132,26 +140,36 @@ def run_record(
     # 停止直前に完成したチャンクも取りこぼさず処理する。
     incremental_transcriber.transcribe_available()
     if exit_code != 0:
-        print(f"録音が異常終了しました: {exit_code}")
+        report_status(f"録音が異常終了しました: {exit_code}")
         return exit_code
 
     segments = incremental_transcriber.segments
     if not segments:
         if any(chunks_dir.glob("chunk-*.wav")):
-            print("文字起こし結果を取得できなかったため、会議ノートは生成しませんでした。")
+            report_status("文字起こし結果を取得できなかったため、会議ノートは生成しませんでした。")
             return 1
         return 0
 
     transcript = format_transcript(segments)
-    _write_analysis_result(
-        args,
-        transcript,
-        notes_dir=notes_dir or settings.notes_dir,
-        analyzer=analyzer,
+    report_status("要約・タスクを抽出中...")
+    meeting_analyzer = analyzer if analyzer is not None else create_default_analyzer()
+    analysis = meeting_analyzer.analyze(transcript)
+    report_status("Markdownを書き出し中...")
+    metadata = MeetingMetadata(
+        title=args.title or default_title(),
+        date=date.today(),
+        participants=args.participants,
+        tags=args.tags,
     )
+    output_path = write_meeting_note(metadata, analysis, transcript, notes_dir=notes_dir or settings.notes_dir)
+    if args.keep_transcript:
+        transcript_path = output_path.with_suffix(".transcript.txt")
+        transcript_path.write_text(transcript + "\n", encoding="utf-8")
+        report_status(f"デバッグ用文字起こし: {transcript_path}")
+    report_status(f"会議ノートを保存しました: {output_path}")
     if incremental_transcriber.failed_paths:
         failed_paths = ", ".join(path.name for path in incremental_transcriber.failed_paths)
-        print(f"文字起こしに失敗したチャンク: {failed_paths}")
+        report_status(f"文字起こしに失敗したチャンク: {failed_paths}")
     return 0
 
 

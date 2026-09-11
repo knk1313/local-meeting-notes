@@ -138,13 +138,35 @@ python -m app record --title "定例MTG" --participant "田中" --tag project-a 
 
 チャンクの長さは`.env`の`RECORDING_CHUNK_SECONDS`で設定する（既定: 15秒）。録音先・ノート出力先はそれぞれ`data/`・`NOTES_DIR`に固定する。
 
+## ローカル画面で会議を開始する
+
+バックエンドとフロントエンドをそれぞれ起動し、ブラウザで`http://localhost:5173`を開く。
+会議名・参加者を入力して開始すると、15秒ごとに追加される文字起こしを画面で確認できる。停止すると要約・タスク抽出を行い、Markdownを`NOTES_DIR`へ保存する。
+
+```sh
+# terminal 1
+cd backend
+source .venv/bin/activate
+pip install -r requirements.txt
+python -m app.api
+```
+
+```sh
+# terminal 2
+cd frontend
+pnpm install
+pnpm dev
+```
+
+初回の録音開始時は、ターミナルにマイク・画面収録の権限を許可する。
+
 ## 技術スタック（方向性）
 
 | 領域 | 選定（方向性） |
 |---|---|
-| Backend | Python（現状はCLI。ローカルAPI化は後続フェーズ） |
+| Backend | Python + FastAPI（ローカルAPI） |
 | 録音 | macOS標準Framework（ScreenCaptureKit） |
-| Frontend | React + TypeScript (Vite、録音操作用UIは後続フェーズ) |
+| Frontend | React + TypeScript (Vite) |
 | パッケージマネージャ (Frontend) | pnpm |
 | STT | OpenAI API / Google Speech-to-Text |
 | タスク分解LLM | Claude API |
