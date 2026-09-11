@@ -145,8 +145,12 @@ def run_record(
 
     segments = incremental_transcriber.segments
     if not segments:
+        if incremental_transcriber.failed_paths:
+            failed_paths = ", ".join(path.name for path in incremental_transcriber.failed_paths)
+            report_status(f"文字起こしに失敗したため、会議ノートは生成しませんでした: {failed_paths}")
+            return 1
         if any(chunks_dir.glob("chunk-*.wav")):
-            report_status("文字起こし結果を取得できなかったため、会議ノートは生成しませんでした。")
+            report_status("音声から発話を検出できなかったため、会議ノートは生成しませんでした。")
             return 1
         return 0
 

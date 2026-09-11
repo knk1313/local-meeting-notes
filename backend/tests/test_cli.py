@@ -82,6 +82,22 @@ class RecordingSttProvider(SttProvider):
         return [Segment(speaker="A", start=0.0, end=1.0, text=path.stem)]
 
 
+class SilentSttProvider(SttProvider):
+    """発話を検出できなかった場合を再現するテスト用STTプロバイダ。"""
+
+    def transcribe(self, path: Path) -> list[Segment]:
+        """文字起こし結果なしを返す。"""
+        return []
+
+
+class FailingSttProvider(SttProvider):
+    """STT呼び出しが失敗する場合を再現するテスト用STTプロバイダ。"""
+
+    def transcribe(self, path: Path) -> list[Segment]:
+        """常に失敗する。"""
+        raise RuntimeError("APIに接続できません")
+
+
 class CliTest(unittest.TestCase):
     """CLIの一気通貫処理を検証する。"""
 
@@ -171,6 +187,48 @@ class CliTest(unittest.TestCase):
             self.assertIn("[A] 0.00s–1.00s: chunk-00001", note)
             self.assertIn("[A] 20.00s–21.00s: chunk-00002", note)
             self.assertTrue(note_path.with_suffix(".transcript.txt").is_file())
+
+    def _run_record_without_transcript(self, provider: SttProvider) -> tuple[int, list[str], Path]:
+        """チャンクは出力されたが文字起こしが空になる録音を実行する。"""
+        temporary_directory = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary_directory.cleanup)
+        temporary_path = Path(temporary_directory.name)
+        notes_dir = temporary_path / "notes"
+        statuses: list[str] = []
+        args = argparse.Namespace(title="無音テスト", participants=[], tags=[], keep_transcript=False)
+
+        with patch("app.cli._resolve_recording_output_dir", return_value=temporary_path / "recording"):
+            exit_code = run_record(
+                args,
+                recorder=FakeChunkRecorder(),
+                stt_provider=provider,
+                analyzer=FakeAnalyzer(),
+                notes_dir=notes_dir,
+                poll_seconds=0.001,
+                on_status=statuses.append,
+            )
+
+        return exit_code, statuses, notes_dir
+
+    def test_run_record_reports_when_no_speech_is_detected(self) -> None:
+        """発話が無い録音は、その理由を伝えて会議ノートを生成しない。"""
+        exit_code, statuses, notes_dir = self._run_record_without_transcript(SilentSttProvider())
+
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(statuses[-1], "音声から発話を検出できなかったため、会議ノートは生成しませんでした。")
+        self.assertFalse(notes_dir.exists())
+
+    def test_run_record_reports_failed_chunks(self) -> None:
+        """STTが失敗した場合は、失敗したチャンク名を添えて理由を伝える。"""
+        exit_code, statuses, notes_dir = self._run_record_without_transcript(FailingSttProvider())
+
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(
+            statuses[-1],
+            "文字起こしに失敗したため、会議ノートは生成しませんでした: chunk-00001.wav, chunk-00002.wav",
+        )
+        self.assertFalse(notes_dir.exists())
+
 
 if __name__ == "__main__":
     unittest.main()
