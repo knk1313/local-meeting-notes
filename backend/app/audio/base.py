@@ -16,3 +16,8 @@ class AudioRecorder(ABC):
     @abstractmethod
     def record(self, output_dir: Path, chunk_seconds: int) -> int:
         """録音を開始し、終了時のプロセス終了コードを返す。"""
+
+    @property
+    def last_error(self) -> str | None:
+        """録音が失敗した理由。取得できない実装ではNoneを返す。"""
+        return None

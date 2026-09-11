@@ -1,6 +1,6 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { CircleAlert, LoaderCircle } from 'lucide-react'
-import { Navigate, Outlet, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom'
+import { Link, Navigate, Outlet, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom'
 import { AiPanels } from './components/AiPanels'
 import { HomeView } from './components/HomeView'
 import { MeetingHeader } from './components/MeetingHeader'
@@ -35,12 +35,15 @@ function LiveMeetingRoute() {
   const isActive = meeting?.phase === 'recording' || meeting?.phase === 'transcribing' || meeting?.phase === 'summarizing'
   const canStop = meeting?.phase === 'recording' || meeting?.phase === 'transcribing'
 
-  useEffect(() => { void request<Meeting>(`/meetings/${meetingId}`).then(setMeeting).catch((loadError: Error) => setError(loadError.message)) }, [meetingId])
+  // 一時的な通信エラーは復帰時に消し、会議自体の失敗(meeting.error)だけを残す。
+  const applyMeeting = useCallback((next: Meeting) => { setMeeting(next); setError(null) }, [])
+
+  useEffect(() => { void request<Meeting>(`/meetings/${meetingId}`).then(applyMeeting).catch((loadError: Error) => setError(loadError.message)) }, [applyMeeting, meetingId])
   useEffect(() => {
     if (!isActive) return undefined
-    const timer = window.setInterval(() => { void request<Meeting>(`/meetings/${meetingId}`).then(setMeeting).catch((pollError: Error) => setError(pollError.message)) }, 1000)
+    const timer = window.setInterval(() => { void request<Meeting>(`/meetings/${meetingId}`).then(applyMeeting).catch((pollError: Error) => setError(pollError.message)) }, 1000)
     return () => window.clearInterval(timer)
-  }, [isActive, meetingId])
+  }, [applyMeeting, isActive, meetingId])
 
   async function stopMeeting() {
     setStopping(true); setError(null)
@@ -48,7 +51,7 @@ function LiveMeetingRoute() {
   }
 
   if (!meeting && !error) return <div className="route-loading"><LoaderCircle className="spin" />会議を読み込んでいます…</div>
-  if (!meeting) return <div className="route-error"><CircleAlert />{error}</div>
+  if (!meeting) return <div className="route-error"><p><CircleAlert />{error}</p><Link to="/">ホームへ戻る</Link></div>
   return <><MeetingHeader meeting={meeting} canStop={Boolean(canStop)} isStopping={stopping} onStop={() => void stopMeeting()} />{error && <p className="form-error page-error"><CircleAlert />{error}</p>}<div className="meeting-grid"><TranscriptCard message={meeting.message} transcript={meeting.transcript} isMeetingActive={Boolean(isActive)} /><AiPanels meeting={meeting} /></div></>
 }
 

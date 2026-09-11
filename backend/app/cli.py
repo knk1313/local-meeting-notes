@@ -9,11 +9,11 @@ from pathlib import Path
 from threading import Event, Thread
 from typing import Callable, Sequence
 
-from app.audio import AudioRecorder, MacOsAudioRecorder
-from app.llm import MeetingAnalyzer, create_default_analyzer
+from app.audio import AudioCaptureError, AudioRecorder, MacOsAudioRecorder
+from app.llm import LlmError, MeetingAnalyzer, create_default_analyzer
 from app.output import MeetingMetadata, write_meeting_note
 from app.settings import PROJECT_ROOT, settings
-from app.stt import IncrementalChunkTranscriber, Segment, SttProvider
+from app.stt import IncrementalChunkTranscriber, Segment, SttError, SttProvider
 from app.stt.openai import OpenAiSttProvider
 
 
@@ -100,6 +100,7 @@ def run_record(
     """録音中にチャンクを逐次文字起こしし、停止後に会議ノートを保存する。"""
     output_dir = _resolve_recording_output_dir()
     chunks_dir = output_dir / "chunks"
+    active_recorder = recorder if recorder is not None else MacOsAudioRecorder()
     active_provider = stt_provider
 
     def report_status(message: str) -> None:
@@ -132,7 +133,7 @@ def run_record(
     report_status("録音中... 停止すると要約と会議ノートを生成します。")
     watcher.start()
     try:
-        exit_code = (recorder or MacOsAudioRecorder()).record(output_dir, settings.recording_chunk_seconds)
+        exit_code = active_recorder.record(output_dir, settings.recording_chunk_seconds)
     finally:
         stop_watching.set()
         watcher.join()
@@ -140,7 +141,9 @@ def run_record(
     # 停止直前に完成したチャンクも取りこぼさず処理する。
     incremental_transcriber.transcribe_available()
     if exit_code != 0:
-        report_status(f"録音が異常終了しました: {exit_code}")
+        # 権限拒否などの理由は録音ヘルパーのstderrにしか出ないため、あれば添えて返す。
+        reason = active_recorder.last_error
+        report_status(f"録音に失敗しました: {reason}" if reason else f"録音が異常終了しました（終了コード {exit_code}）。")
         return exit_code
 
     segments = incremental_transcriber.segments
@@ -225,11 +228,16 @@ def _format_timestamp_range(start: float | None, end: float | None) -> str:
 def main(argv: Sequence[str] | None = None) -> int:
     """CLIを実行する。"""
     arguments = list(sys.argv[1:] if argv is None else argv)
-    if arguments[:1] == ["record"]:
-        args = build_record_parser().parse_args(arguments[1:])
-        return run_record(args)
-    args = build_parser().parse_args(arguments)
-    run_pipeline(args)
+    try:
+        if arguments[:1] == ["record"]:
+            args = build_record_parser().parse_args(arguments[1:])
+            return run_record(args)
+        args = build_parser().parse_args(arguments)
+        run_pipeline(args)
+    except (AudioCaptureError, SttError, LlmError) as exc:
+        # 想定済みの失敗は、traceback ではなく理由だけを表示する。
+        print(f"エラー: {exc}", file=sys.stderr)
+        return 1
     return 0
 
 

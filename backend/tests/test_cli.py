@@ -15,6 +15,7 @@ from app.cli import (
     run_pipeline,
     run_record,
 )
+from app.audio import AudioRecorder
 from app.llm import MeetingAnalysis, Task
 from app.settings import settings
 from app.stt import Segment, SttProvider
@@ -44,7 +45,20 @@ class FakeAnalyzer:
         )
 
 
-class FakeRecorder:
+class FailingRecorder(AudioRecorder):
+    """理由付きで失敗するテスト用録音器。"""
+
+    def record(self, output_dir: Path, chunk_seconds: int) -> int:
+        """録音ヘルパーの異常終了を再現する。"""
+        return 1
+
+    @property
+    def last_error(self) -> str | None:
+        """ヘルパーが出力した失敗理由を返す。"""
+        return "録音を開始できませんでした: 画面収録の許可がありません"
+
+
+class FakeRecorder(AudioRecorder):
     """録音を起動せず、受け取った設定を記録するテスト用録音器。"""
 
     def __init__(self) -> None:
@@ -58,7 +72,7 @@ class FakeRecorder:
         return 0
 
 
-class FakeChunkRecorder:
+class FakeChunkRecorder(AudioRecorder):
     """停止時までに連番チャンクを出力するテスト用録音器。"""
 
     def record(self, output_dir: Path, chunk_seconds: int) -> int:
@@ -209,6 +223,27 @@ class CliTest(unittest.TestCase):
             )
 
         return exit_code, statuses, notes_dir
+
+    def test_run_record_reports_recorder_failure_reason(self) -> None:
+        """録音ヘルパーが失敗した場合は、終了コードではなく理由を伝える。"""
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_path = Path(temporary_directory)
+            statuses: list[str] = []
+            args = argparse.Namespace(title="失敗テスト", participants=[], tags=[], keep_transcript=False)
+
+            with patch("app.cli._resolve_recording_output_dir", return_value=temporary_path / "recording"):
+                exit_code = run_record(
+                    args,
+                    recorder=FailingRecorder(),
+                    stt_provider=FakeSttProvider(),
+                    analyzer=FakeAnalyzer(),
+                    notes_dir=temporary_path / "notes",
+                    poll_seconds=0.001,
+                    on_status=statuses.append,
+                )
+
+            self.assertEqual(exit_code, 1)
+            self.assertEqual(statuses[-1], "録音に失敗しました: 録音を開始できませんでした: 画面収録の許可がありません")
 
     def test_run_record_reports_when_no_speech_is_detected(self) -> None:
         """発話が無い録音は、その理由を伝えて会議ノートを生成しない。"""
