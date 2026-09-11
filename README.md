@@ -134,7 +134,7 @@ source .venv/bin/activate
 python -m app record --title "定例MTG" --participant "田中" --tag project-a --keep-transcript
 ```
 
-既定ではリポジトリ直下の`data/recordings_YYYYMMDDHHMM/`へ保存する。録音全体は`recording.wav`として1本にまとめ、逐次文字起こし用の15秒ごとのWAVチャンクは`chunks/`へ分けて保存する。`Ctrl+C`で録音を停止する。
+既定ではリポジトリ直下の`data/recordings_YYYYMMDDHHMM/`へ保存する。録音全体は`recording.wav`として1本にまとめ、逐次文字起こし用の15秒ごとのWAVチャンクは`chunks/`へ分けて保存する。完成したチャンクは連番順にOpenAI STTへ送られ、文字起こし結果がCLIへ追加表示される。`Ctrl+C`で録音を停止すると、取得済みの文字起こし全文から要約・タスクを抽出し、Markdown会議ノートを自動保存する。
 
 チャンクの長さは`.env`の`RECORDING_CHUNK_SECONDS`で設定する（既定: 15秒）。録音先・ノート出力先はそれぞれ`data/`・`NOTES_DIR`に固定する。
 

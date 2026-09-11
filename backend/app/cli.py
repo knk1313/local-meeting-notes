@@ -6,13 +6,14 @@ import argparse
 import sys
 from datetime import date, datetime
 from pathlib import Path
+from threading import Event, Thread
 from typing import Sequence
 
-from app.audio import MacOsAudioRecorder
+from app.audio import AudioRecorder, MacOsAudioRecorder
 from app.llm import MeetingAnalyzer, create_default_analyzer
 from app.output import MeetingMetadata, write_meeting_note
 from app.settings import PROJECT_ROOT, settings
-from app.stt import Segment, SttProvider
+from app.stt import IncrementalChunkTranscriber, Segment, SttProvider
 from app.stt.openai import OpenAiSttProvider
 
 
@@ -85,12 +86,73 @@ def run_pipeline(
     return _write_analysis_result(args, transcript, notes_dir=notes_dir or settings.notes_dir, analyzer=analyzer)
 
 
-def run_record(args: argparse.Namespace, *, recorder: MacOsAudioRecorder | None = None) -> int:
-    """macOS録音を開始し、会議全体の音声とSTT用チャンクを指定先へ保存する。"""
+def run_record(
+    args: argparse.Namespace,
+    *,
+    recorder: AudioRecorder | None = None,
+    stt_provider: SttProvider | None = None,
+    analyzer: MeetingAnalyzer | None = None,
+    notes_dir: Path | None = None,
+    poll_seconds: float = 0.25,
+) -> int:
+    """録音中にチャンクを逐次文字起こしし、停止後に会議ノートを保存する。"""
     output_dir = _resolve_recording_output_dir()
+    chunks_dir = output_dir / "chunks"
+    active_provider = stt_provider
+
+    def transcribe_chunk(path: Path) -> list[Segment]:
+        nonlocal active_provider
+        if active_provider is None:
+            active_provider = OpenAiSttProvider()
+        return active_provider.transcribe(path)
+
+    incremental_transcriber = IncrementalChunkTranscriber(
+        chunks_dir,
+        chunk_seconds=settings.recording_chunk_seconds,
+        transcribe=transcribe_chunk,
+        on_status=print,
+    )
+    stop_watching = Event()
+
+    def watch_chunks() -> None:
+        while not stop_watching.wait(poll_seconds):
+            incremental_transcriber.transcribe_available()
+
+    watcher = Thread(target=watch_chunks, name="incremental-stt", daemon=True)
 
     print(f"録音セッションの出力先: {output_dir}")
-    return (recorder or MacOsAudioRecorder()).record(output_dir, settings.recording_chunk_seconds)
+    print("録音中... 停止すると要約と会議ノートを生成します。")
+    watcher.start()
+    try:
+        exit_code = (recorder or MacOsAudioRecorder()).record(output_dir, settings.recording_chunk_seconds)
+    finally:
+        stop_watching.set()
+        watcher.join()
+
+    # 停止直前に完成したチャンクも取りこぼさず処理する。
+    incremental_transcriber.transcribe_available()
+    if exit_code != 0:
+        print(f"録音が異常終了しました: {exit_code}")
+        return exit_code
+
+    segments = incremental_transcriber.segments
+    if not segments:
+        if any(chunks_dir.glob("chunk-*.wav")):
+            print("文字起こし結果を取得できなかったため、会議ノートは生成しませんでした。")
+            return 1
+        return 0
+
+    transcript = format_transcript(segments)
+    _write_analysis_result(
+        args,
+        transcript,
+        notes_dir=notes_dir or settings.notes_dir,
+        analyzer=analyzer,
+    )
+    if incremental_transcriber.failed_paths:
+        failed_paths = ", ".join(path.name for path in incremental_transcriber.failed_paths)
+        print(f"文字起こしに失敗したチャンク: {failed_paths}")
+    return 0
 
 
 def _resolve_recording_output_dir() -> Path:

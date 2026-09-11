@@ -58,6 +58,30 @@ class FakeRecorder:
         return 0
 
 
+class FakeChunkRecorder:
+    """停止時までに連番チャンクを出力するテスト用録音器。"""
+
+    def record(self, output_dir: Path, chunk_seconds: int) -> int:
+        """順番が前後したチャンクでも、後段が連番順に処理できる状態を作る。"""
+        chunks_dir = output_dir / "chunks"
+        chunks_dir.mkdir(parents=True)
+        (chunks_dir / "chunk-00002.wav").write_bytes(b"second")
+        (chunks_dir / "chunk-00001.wav").write_bytes(b"first")
+        return 0
+
+
+class RecordingSttProvider(SttProvider):
+    """呼び出し順を保持するテスト用STTプロバイダ。"""
+
+    def __init__(self) -> None:
+        self.paths: list[Path] = []
+
+    def transcribe(self, path: Path) -> list[Segment]:
+        """ファイル名に応じた文字起こし結果を返す。"""
+        self.paths.append(path)
+        return [Segment(speaker="A", start=0.0, end=1.0, text=path.stem)]
+
+
 class CliTest(unittest.TestCase):
     """CLIの一気通貫処理を検証する。"""
 
@@ -112,6 +136,41 @@ class CliTest(unittest.TestCase):
             self.assertTrue(output_path.is_file())
             self.assertIn("title: \"定例MTG\"", output_path.read_text(encoding="utf-8"))
             self.assertTrue(output_path.with_suffix(".transcript.txt").is_file())
+
+    def test_run_record_transcribes_chunks_in_order_and_writes_note(self) -> None:
+        """録音停止後、連番チャンクの文字起こしを統合して会議ノートを生成する。"""
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_path = Path(temporary_directory)
+            recording_dir = temporary_path / "recording"
+            notes_dir = temporary_path / "notes"
+            provider = RecordingSttProvider()
+            args = argparse.Namespace(
+                title="逐次文字起こしテスト",
+                participants=[],
+                tags=[],
+                keep_transcript=True,
+            )
+
+            with (
+                patch("app.cli._resolve_recording_output_dir", return_value=recording_dir),
+                patch("app.cli.settings", replace(settings, recording_chunk_seconds=20)),
+            ):
+                exit_code = run_record(
+                    args,
+                    recorder=FakeChunkRecorder(),
+                    stt_provider=provider,
+                    analyzer=FakeAnalyzer(),
+                    notes_dir=notes_dir,
+                    poll_seconds=0.001,
+                )
+
+            self.assertEqual(exit_code, 0)
+            self.assertEqual([path.name for path in provider.paths], ["chunk-00001.wav", "chunk-00002.wav"])
+            note_path = next(notes_dir.glob("*.md"))
+            note = note_path.read_text(encoding="utf-8")
+            self.assertIn("[A] 0.00s–1.00s: chunk-00001", note)
+            self.assertIn("[A] 20.00s–21.00s: chunk-00002", note)
+            self.assertTrue(note_path.with_suffix(".transcript.txt").is_file())
 
 if __name__ == "__main__":
     unittest.main()

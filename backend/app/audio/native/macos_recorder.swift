@@ -211,17 +211,24 @@ final class ChunkMixer {
     private func writeSttChunk(_ buffer: AVAudioPCMBuffer, index: Int, format: AVAudioFormat) {
         let filename = String(format: "chunk-%05d.wav", index + 1)
         let outputURL = chunksDirectory.appendingPathComponent(filename)
+        let temporaryURL = chunksDirectory.appendingPathComponent(".partial-\(filename)")
         do {
             try FileManager.default.createDirectory(at: chunksDirectory, withIntermediateDirectories: true)
-            let audioFile = try AVAudioFile(
-                forWriting: outputURL,
-                settings: format.settings,
-                commonFormat: .pcmFormatFloat32,
-                interleaved: false
-            )
-            try audioFile.write(from: buffer)
+            try? FileManager.default.removeItem(at: temporaryURL)
+            do {
+                let audioFile = try AVAudioFile(
+                    forWriting: temporaryURL,
+                    settings: format.settings,
+                    commonFormat: .pcmFormatFloat32,
+                    interleaved: false
+                )
+                try audioFile.write(from: buffer)
+            }
+            try? FileManager.default.removeItem(at: outputURL)
+            try FileManager.default.moveItem(at: temporaryURL, to: outputURL)
             print("STT用チャンクを書き出しました: \(outputURL.path)")
         } catch {
+            try? FileManager.default.removeItem(at: temporaryURL)
             fputs("STT用チャンクの書き出しに失敗しました: \(error.localizedDescription)\n", stderr)
         }
     }
