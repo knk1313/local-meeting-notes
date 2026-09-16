@@ -153,34 +153,26 @@ source .venv/bin/activate
 python -m app note ../data/recordings_YYYYMMDDHHMM/transcript.txt --title "定例MTG" --participant "田中"
 ```
 
-## ローカル画面で会議を開始する
+## ローカルAPIを起動する
 
-バックエンドとフロントエンドを起動し、ブラウザで表示されたURL（既定は`http://localhost:5173`）を開く。
-会議名・参加者を入力して開始すると、15秒ごとに追加される文字起こしを画面で確認できる。停止すると要約・タスク抽出を行い、Markdownを`NOTES_DIR`へ保存する。
-
-依存関係のインストール後は、リポジトリ直下の次のコマンドで両方をまとめて起動できる。
-ログは`[api]` / `[web]`の接頭辞で区別し、`Ctrl+C`で両方を停止する。
+会議の開始・停止と、保存済み会議ノートの取得をHTTPで扱うローカルAPIを同梱している。
 
 ```sh
-./scripts/dev.sh
-```
-
-初回や、個別に起動したい場合はターミナルを2つ使う。
-
-```sh
-# terminal 1
 cd backend
 source .venv/bin/activate
 pip install -r requirements.txt
 python -m app.api
 ```
 
-```sh
-# terminal 2
-cd frontend
-pnpm install
-pnpm dev
-```
+`http://127.0.0.1:8000` で待ち受ける。主なエンドポイントは次のとおり。
+
+| メソッド | パス | 用途 |
+|---|---|---|
+| POST | `/api/meetings` | 録音と逐次文字起こしを開始する |
+| GET | `/api/meetings/{id}` | 会議の状態・文字起こしを取得する |
+| POST | `/api/meetings/current/stop` | 録音を停止し、要約とMarkdown生成へ進める |
+| GET | `/api/notes` | 保存済み会議ノートの一覧を返す |
+| GET | `/api/notes/{id}` | 会議ノートのMarkdown本文を返す |
 
 初回の録音開始時は、ターミナルにマイク・画面収録の権限を許可する。
 
@@ -190,8 +182,6 @@ pnpm dev
 |---|---|
 | Backend | Python + FastAPI（ローカルAPI） |
 | 録音 | macOS標準Framework（ScreenCaptureKit） |
-| Frontend | React + TypeScript (Vite) |
-| パッケージマネージャ (Frontend) | pnpm |
 | STT | OpenAI API / Google Speech-to-Text |
 | タスク分解LLM | Claude API |
 
@@ -207,15 +197,6 @@ local-meeting-notes/
 │   │   ├── audio/        # 音声キャプチャ・チャンク処理
 │   │   └── output/       # Markdown生成・Git連携
 │   └── requirements.txt
-├── frontend/
-│   ├── src/
-│   │   ├── main.tsx       # エントリポイント
-│   │   └── App.tsx
-│   ├── public/
-│   ├── index.html
-│   ├── vite.config.ts
-│   ├── eslint.config.js
-│   └── package.json
 ├── notes/                 # 出力先
 ├── .env.example
 └── README.md
