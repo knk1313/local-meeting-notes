@@ -138,6 +138,21 @@ python -m app record --title "定例MTG" --participant "田中" --tag project-a 
 
 チャンクの長さは`.env`の`RECORDING_CHUNK_SECONDS`で設定する（既定: 15秒）。録音先・ノート出力先はそれぞれ`data/`・`NOTES_DIR`に固定する。
 
+発話が含まれないチャンクはSTTへ送らずスキップする。また、画面スリープ・画面ロック・外部ディスプレイの
+切断でキャプチャが中断された場合は、無音を録り続けずにその時点で録音を終了し、取得できたぶんから
+会議ノートを生成する。
+
+## 途中で落ちた録音から会議ノートを作り直す
+
+録音中の文字起こしは、確定したチャンクごとに録音ディレクトリの`transcript.txt`へ追記される。
+要約の生成に失敗した場合や処理を中断した場合は、このファイルから会議ノートを作り直せる。
+
+```sh
+cd backend
+source .venv/bin/activate
+python -m app note ../data/recordings_YYYYMMDDHHMM/transcript.txt --title "定例MTG" --participant "田中"
+```
+
 ## ローカル画面で会議を開始する
 
 バックエンドとフロントエンドを起動し、ブラウザで表示されたURL（既定は`http://localhost:5173`）を開く。

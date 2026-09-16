@@ -7,6 +7,8 @@ import ScreenCaptureKit
 let sampleRate = 48_000.0
 let masterRecordingFilename = "recording.wav"
 let chunksDirectoryName = "chunks"
+/// 画面スリープや外部ディスプレイの切断などでキャプチャが中断されたときの終了コード。
+let streamStoppedExitCode: Int32 = 3
 
 enum RecorderError: LocalizedError {
     case invalidArguments(String)
@@ -372,8 +374,11 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
     }
 
     func stream(_ stream: SCStream, didStopWithError error: Error) {
-        fputs("録音ストリームが停止しました: \(error.localizedDescription)\n", stderr)
+        // ストリームが死んだまま無音を録り続けないよう、ここで録音を終了する。
+        // 画面スリープ・画面ロック・外部ディスプレイの抜き差しで発生する。
+        fputs("録音が中断されました: \(error.localizedDescription)\n", stderr)
         mixer.finish()
+        exit(streamStoppedExitCode)
     }
 }
 

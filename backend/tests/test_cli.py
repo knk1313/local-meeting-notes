@@ -12,8 +12,11 @@ from unittest.mock import patch
 from app.cli import (
     EXIT_FAILED,
     EXIT_NO_SPEECH,
+    TRANSCRIPT_FILENAME,
+    build_note_parser,
     build_record_parser,
     format_transcript,
+    run_note,
     run_pipeline,
     run_record,
 )
@@ -58,6 +61,22 @@ class FailingRecorder(AudioRecorder):
     def last_error(self) -> str | None:
         """ヘルパーが出力した失敗理由を返す。"""
         return "録音を開始できませんでした: 画面収録の許可がありません"
+
+
+class InterruptedRecorder(AudioRecorder):
+    """チャンクを出したあと、キャプチャ中断で異常終了する録音器。"""
+
+    def record(self, output_dir: Path, chunk_seconds: int) -> int:
+        """途中まで録音できた状態で異常終了する。"""
+        chunks_dir = output_dir / "chunks"
+        chunks_dir.mkdir(parents=True)
+        (chunks_dir / "chunk-00001.wav").write_bytes(b"first")
+        return 3
+
+    @property
+    def last_error(self) -> str | None:
+        """キャプチャが中断された理由を返す。"""
+        return "録音が中断されました: 取り込みを行うディスプレイまたはウインドウが見つかりませんでした"
 
 
 class FakeRecorder(AudioRecorder):
@@ -237,6 +256,72 @@ class CliTest(unittest.TestCase):
             )
 
         return exit_code, statuses, notes_dir, recording_dir
+
+    def test_run_record_keeps_transcript_on_disk_while_recording(self) -> None:
+        """チャンクごとの文字起こしを録音ディレクトリへ追記し、復旧できるようにする。"""
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_path = Path(temporary_directory)
+            recording_dir = temporary_path / "recording"
+            args = argparse.Namespace(title="追記テスト", participants=[], tags=[], keep_transcript=False)
+
+            with patch("app.cli._resolve_recording_output_dir", return_value=recording_dir):
+                run_record(
+                    args,
+                    recorder=FakeChunkRecorder(),
+                    stt_provider=RecordingSttProvider(),
+                    analyzer=FakeAnalyzer(),
+                    notes_dir=temporary_path / "notes",
+                    poll_seconds=0.001,
+                )
+
+            transcript = (recording_dir / TRANSCRIPT_FILENAME).read_text(encoding="utf-8")
+            self.assertEqual(
+                transcript.splitlines(),
+                ["[A] 0.00s–1.00s: chunk-00001", "[A] 15.00s–16.00s: chunk-00002"],
+            )
+
+    def test_run_record_writes_note_when_recording_is_interrupted(self) -> None:
+        """録音が途中で切れても、取得できた文字起こしから会議ノートを作る。"""
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_path = Path(temporary_directory)
+            notes_dir = temporary_path / "notes"
+            warnings: list[str] = []
+            args = argparse.Namespace(title="中断テスト", participants=[], tags=[], keep_transcript=False)
+
+            with patch("app.cli._resolve_recording_output_dir", return_value=temporary_path / "recording"):
+                exit_code = run_record(
+                    args,
+                    recorder=InterruptedRecorder(),
+                    stt_provider=RecordingSttProvider(),
+                    analyzer=FakeAnalyzer(),
+                    notes_dir=notes_dir,
+                    poll_seconds=0.001,
+                    on_warning=warnings.append,
+                )
+
+            self.assertEqual(exit_code, 0)
+            self.assertTrue(next(notes_dir.glob("*.md")).is_file())
+            self.assertEqual(
+                warnings,
+                [
+                    "録音が途中で終了しました（録音が中断されました: "
+                    "取り込みを行うディスプレイまたはウインドウが見つかりませんでした）。"
+                    "取得できたぶんで会議ノートを作成します。"
+                ],
+            )
+
+    def test_run_note_rebuilds_note_from_saved_transcript(self) -> None:
+        """保存済みの文字起こしから会議ノートを作り直せる。"""
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_path = Path(temporary_directory)
+            transcript_path = temporary_path / TRANSCRIPT_FILENAME
+            transcript_path.write_text("[A] 0.00s–1.00s: 復旧テストです\n", encoding="utf-8")
+            args = build_note_parser().parse_args([str(transcript_path), "--title", "復旧した会議"])
+
+            note_path = run_note(args, analyzer=FakeAnalyzer(), notes_dir=temporary_path / "notes")
+
+            self.assertIn("復旧した会議", note_path.read_text(encoding="utf-8"))
+            self.assertIn("[A] 0.00s–1.00s: 復旧テストです", note_path.read_text(encoding="utf-8"))
 
     def test_run_record_reports_recorder_failure_reason(self) -> None:
         """録音ヘルパーが失敗した場合は、終了コードではなく理由を伝える。"""

@@ -7,6 +7,7 @@ import unittest
 from pathlib import Path
 
 from app.stt import IncrementalChunkTranscriber, Segment
+from wav_fixtures import silence, tone, write_float_wav
 
 
 class IncrementalChunkTranscriberTest(unittest.TestCase):
@@ -40,6 +41,32 @@ class IncrementalChunkTranscriberTest(unittest.TestCase):
                 [(segment.start, segment.end, segment.text) for segment in transcriber.segments],
                 [(1.0, 2.0, "chunk-00001"), (41.0, 42.0, "chunk-00003")],
             )
+
+    def test_skips_silent_chunks_without_calling_the_provider(self) -> None:
+        """無音チャンクはSTTへ送らず、発話のあるチャンクだけ文字起こしする。"""
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            chunks_dir = Path(temporary_directory)
+            write_float_wav(chunks_dir / "chunk-00001.wav", silence())
+            write_float_wav(chunks_dir / "chunk-00002.wav", tone())
+
+            calls: list[str] = []
+            statuses: list[str] = []
+
+            def transcribe(path: Path) -> list[Segment]:
+                calls.append(path.name)
+                return [Segment(speaker="A", start=0.0, end=1.0, text=path.stem)]
+
+            transcriber = IncrementalChunkTranscriber(
+                chunks_dir,
+                chunk_seconds=15,
+                transcribe=transcribe,
+                on_status=statuses.append,
+            )
+            transcriber.transcribe_available()
+
+            self.assertEqual(calls, ["chunk-00002.wav"])
+            self.assertEqual(transcriber.failed_paths, [])
+            self.assertIn("無音のためスキップ: chunk-00001.wav", statuses)
 
 
 if __name__ == "__main__":

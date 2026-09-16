@@ -6,6 +6,7 @@ from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
 
+from app.audio.level import is_silent
 from app.stt.base import Segment
 
 
@@ -57,6 +58,11 @@ class IncrementalChunkTranscriber:
                 continue
 
             self._handled_paths.add(path)
+            if is_silent(path):
+                # 発話が無いチャンクはSTTへ送らず、時間と費用を使わない。
+                self._status(f"無音のためスキップ: {path.name}")
+                continue
+
             chunk_index = _chunk_index(path)
             self._status(f"文字起こし中: {path.name}")
             try:
