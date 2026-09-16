@@ -42,6 +42,31 @@ class ApiTest(unittest.TestCase):
         self.assertEqual(meeting.status_code, 200)
         self.assertEqual(meeting.json()["title"], "定例MTG")
 
+    def test_maps_exit_code_to_phase(self) -> None:
+        """録音処理の終了コードから、会議の最終状態を決める。"""
+        for exit_code, phase in [(api.EXIT_SUCCESS, "completed"), (api.EXIT_NO_SPEECH, "no_speech"), (9, "failed")]:
+            with self.subTest(exit_code=exit_code):
+                session = api.MeetingSession(id="test", title="定例MTG", participants=[])
+
+                with patch("app.api.run_record", return_value=exit_code):
+                    session._run()
+
+                self.assertEqual(session.snapshot().phase, phase)
+
+    def test_exposes_partial_transcription_warning(self) -> None:
+        """一部のチャンクが文字起こしできなかった場合、警告を画面へ返す。"""
+        session = api.MeetingSession(id="test", title="定例MTG", participants=[])
+
+        def run_with_warning(*_args: object, **keywords: object) -> int:
+            keywords["on_warning"](" 欠落があります。")  # type: ignore[operator]
+            return api.EXIT_SUCCESS
+
+        with patch("app.api.run_record", side_effect=run_with_warning):
+            session._run()
+
+        self.assertEqual(session.snapshot().warning, " 欠落があります。")
+        self.assertEqual(session.snapshot().phase, "completed")
+
 
 if __name__ == "__main__":
     unittest.main()

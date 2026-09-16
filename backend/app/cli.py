@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import shutil
 import sys
 from datetime import date, datetime
 from pathlib import Path
@@ -15,6 +16,14 @@ from app.output import MeetingMetadata, write_meeting_note
 from app.settings import PROJECT_ROOT, settings
 from app.stt import IncrementalChunkTranscriber, Segment, SttError, SttProvider
 from app.stt.openai import OpenAiSttProvider
+
+
+#: 録音が正常に終わり、会議ノートを保存した。
+EXIT_SUCCESS = 0
+#: 録音または文字起こしに失敗した。録音データは調査のため残す。
+EXIT_FAILED = 1
+#: 発話を検出できず、会議ノートを生成しなかった。録音データは破棄する。
+EXIT_NO_SPEECH = 2
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -96,6 +105,7 @@ def run_record(
     poll_seconds: float = 0.25,
     on_status: Callable[[str], None] | None = None,
     on_segments: Callable[[list[Segment]], None] | None = None,
+    on_warning: Callable[[str], None] | None = None,
 ) -> int:
     """録音中にチャンクを逐次文字起こしし、停止後に会議ノートを保存する。"""
     output_dir = _resolve_recording_output_dir()
@@ -107,6 +117,11 @@ def run_record(
         print(message)
         if on_status is not None:
             on_status(message)
+
+    def report_warning(message: str) -> None:
+        print(message)
+        if on_warning is not None:
+            on_warning(message)
 
     def transcribe_chunk(path: Path) -> list[Segment]:
         nonlocal active_provider
@@ -140,7 +155,7 @@ def run_record(
 
     # 停止直前に完成したチャンクも取りこぼさず処理する。
     incremental_transcriber.transcribe_available()
-    if exit_code != 0:
+    if exit_code != EXIT_SUCCESS:
         # 権限拒否などの理由は録音ヘルパーのstderrにしか出ないため、あれば添えて返す。
         reason = active_recorder.last_error
         report_status(f"録音に失敗しました: {reason}" if reason else f"録音が異常終了しました（終了コード {exit_code}）。")
@@ -151,11 +166,15 @@ def run_record(
         if incremental_transcriber.failed_paths:
             failed_paths = ", ".join(path.name for path in incremental_transcriber.failed_paths)
             report_status(f"文字起こしに失敗したため、会議ノートは生成しませんでした: {failed_paths}")
-            return 1
-        if any(chunks_dir.glob("chunk-*.wav")):
-            report_status("音声から発話を検出できなかったため、会議ノートは生成しませんでした。")
-            return 1
-        return 0
+            return EXIT_FAILED
+        reason = (
+            "発話を検出できませんでした。"
+            if any(chunks_dir.glob("chunk-*.wav"))
+            else "文字起こしできる音声がありませんでした（録音が短すぎます）。"
+        )
+        _discard_recording(output_dir, report_status)
+        report_status(f"{reason}会議ノートは作成せず、録音データは破棄しました。")
+        return EXIT_NO_SPEECH
 
     transcript = format_transcript(segments)
     report_status("要約・タスクを抽出中...")
@@ -173,11 +192,21 @@ def run_record(
         transcript_path = output_path.with_suffix(".transcript.txt")
         transcript_path.write_text(transcript + "\n", encoding="utf-8")
         report_status(f"デバッグ用文字起こし: {transcript_path}")
-    report_status(f"会議ノートを保存しました: {output_path}")
     if incremental_transcriber.failed_paths:
         failed_paths = ", ".join(path.name for path in incremental_transcriber.failed_paths)
-        report_status(f"文字起こしに失敗したチャンク: {failed_paths}")
-    return 0
+        report_warning(f"一部の音声を文字起こしできませんでした（{failed_paths}）。会議ノートに欠落があります。")
+    report_status(f"会議ノートを保存しました: {output_path}")
+    return EXIT_SUCCESS
+
+
+def _discard_recording(output_dir: Path, report_status: Callable[[str], None]) -> None:
+    """会議ノートにならなかった録音データを削除する。失敗しても処理は続ける。"""
+    if not output_dir.exists():
+        return
+    try:
+        shutil.rmtree(output_dir)
+    except OSError as exc:
+        report_status(f"録音データを削除できませんでした: {output_dir}（{exc}）")
 
 
 def _resolve_recording_output_dir() -> Path:

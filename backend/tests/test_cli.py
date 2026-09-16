@@ -10,6 +10,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 from app.cli import (
+    EXIT_FAILED,
+    EXIT_NO_SPEECH,
     build_record_parser,
     format_transcript,
     run_pipeline,
@@ -104,6 +106,16 @@ class SilentSttProvider(SttProvider):
         return []
 
 
+class PartiallyFailingSttProvider(SttProvider):
+    """一部のチャンクだけ失敗するテスト用STTプロバイダ。"""
+
+    def transcribe(self, path: Path) -> list[Segment]:
+        """先頭チャンクだけ失敗し、残りは文字起こしする。"""
+        if path.name == "chunk-00001.wav":
+            raise RuntimeError("一時的な障害")
+        return [Segment(speaker="A", start=0.0, end=1.0, text=path.stem)]
+
+
 class FailingSttProvider(SttProvider):
     """STT呼び出しが失敗する場合を再現するテスト用STTプロバイダ。"""
 
@@ -140,7 +152,8 @@ class CliTest(unittest.TestCase):
         with patch("app.cli.settings", replace(settings, recording_chunk_seconds=20)):
             exit_code = run_record(args, recorder=recorder)
 
-        self.assertEqual(exit_code, 0)
+        # チャンクが1つも出ないまま停止した録音は、ノートを作らず破棄する。
+        self.assertEqual(exit_code, EXIT_NO_SPEECH)
         self.assertIsNotNone(recorder.output_dir)
         self.assertEqual(recorder.output_dir.parent, Path(__file__).resolve().parents[2] / "data")
         self.assertRegex(recorder.output_dir.name, r"^recordings_\d{12}$")
@@ -202,16 +215,17 @@ class CliTest(unittest.TestCase):
             self.assertIn("[A] 20.00s–21.00s: chunk-00002", note)
             self.assertTrue(note_path.with_suffix(".transcript.txt").is_file())
 
-    def _run_record_without_transcript(self, provider: SttProvider) -> tuple[int, list[str], Path]:
+    def _run_record_without_transcript(self, provider: SttProvider) -> tuple[int, list[str], Path, Path]:
         """チャンクは出力されたが文字起こしが空になる録音を実行する。"""
         temporary_directory = tempfile.TemporaryDirectory()
         self.addCleanup(temporary_directory.cleanup)
         temporary_path = Path(temporary_directory.name)
+        recording_dir = temporary_path / "recording"
         notes_dir = temporary_path / "notes"
         statuses: list[str] = []
         args = argparse.Namespace(title="無音テスト", participants=[], tags=[], keep_transcript=False)
 
-        with patch("app.cli._resolve_recording_output_dir", return_value=temporary_path / "recording"):
+        with patch("app.cli._resolve_recording_output_dir", return_value=recording_dir):
             exit_code = run_record(
                 args,
                 recorder=FakeChunkRecorder(),
@@ -222,7 +236,7 @@ class CliTest(unittest.TestCase):
                 on_status=statuses.append,
             )
 
-        return exit_code, statuses, notes_dir
+        return exit_code, statuses, notes_dir, recording_dir
 
     def test_run_record_reports_recorder_failure_reason(self) -> None:
         """録音ヘルパーが失敗した場合は、終了コードではなく理由を伝える。"""
@@ -245,24 +259,53 @@ class CliTest(unittest.TestCase):
             self.assertEqual(exit_code, 1)
             self.assertEqual(statuses[-1], "録音に失敗しました: 録音を開始できませんでした: 画面収録の許可がありません")
 
+    def test_run_record_warns_about_partially_failed_chunks(self) -> None:
+        """一部のチャンクだけ失敗した場合は、ノートを保存したうえで欠落を警告する。"""
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_path = Path(temporary_directory)
+            notes_dir = temporary_path / "notes"
+            warnings: list[str] = []
+            args = argparse.Namespace(title="部分失敗テスト", participants=[], tags=[], keep_transcript=False)
+
+            with patch("app.cli._resolve_recording_output_dir", return_value=temporary_path / "recording"):
+                exit_code = run_record(
+                    args,
+                    recorder=FakeChunkRecorder(),
+                    stt_provider=PartiallyFailingSttProvider(),
+                    analyzer=FakeAnalyzer(),
+                    notes_dir=notes_dir,
+                    poll_seconds=0.001,
+                    on_warning=warnings.append,
+                )
+
+            self.assertEqual(exit_code, 0)
+            self.assertTrue(next(notes_dir.glob("*.md")).is_file())
+            self.assertEqual(
+                warnings,
+                ["一部の音声を文字起こしできませんでした（chunk-00001.wav）。会議ノートに欠落があります。"],
+            )
+
     def test_run_record_reports_when_no_speech_is_detected(self) -> None:
         """発話が無い録音は、その理由を伝えて会議ノートを生成しない。"""
-        exit_code, statuses, notes_dir = self._run_record_without_transcript(SilentSttProvider())
+        exit_code, statuses, notes_dir, recording_dir = self._run_record_without_transcript(SilentSttProvider())
 
-        self.assertEqual(exit_code, 1)
-        self.assertEqual(statuses[-1], "音声から発話を検出できなかったため、会議ノートは生成しませんでした。")
+        self.assertEqual(exit_code, EXIT_NO_SPEECH)
+        self.assertEqual(statuses[-1], "発話を検出できませんでした。会議ノートは作成せず、録音データは破棄しました。")
         self.assertFalse(notes_dir.exists())
+        self.assertFalse(recording_dir.exists())
 
     def test_run_record_reports_failed_chunks(self) -> None:
         """STTが失敗した場合は、失敗したチャンク名を添えて理由を伝える。"""
-        exit_code, statuses, notes_dir = self._run_record_without_transcript(FailingSttProvider())
+        exit_code, statuses, notes_dir, recording_dir = self._run_record_without_transcript(FailingSttProvider())
 
-        self.assertEqual(exit_code, 1)
+        self.assertEqual(exit_code, EXIT_FAILED)
         self.assertEqual(
             statuses[-1],
             "文字起こしに失敗したため、会議ノートは生成しませんでした: chunk-00001.wav, chunk-00002.wav",
         )
         self.assertFalse(notes_dir.exists())
+        # 原因調査のため、失敗した録音データは残す。
+        self.assertTrue(recording_dir.exists())
 
 
 if __name__ == "__main__":

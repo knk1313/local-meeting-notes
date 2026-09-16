@@ -14,13 +14,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from app.audio import MacOsAudioRecorder
-from app.cli import run_record
+from app.cli import EXIT_NO_SPEECH, EXIT_SUCCESS, run_record
 from app.notes import StoredNote, get_note, list_notes
 from app.settings import settings
 from app.stt import Segment
 
 
-SessionPhase = Literal["recording", "transcribing", "summarizing", "completed", "failed"]
+SessionPhase = Literal["recording", "transcribing", "summarizing", "completed", "no_speech", "failed"]
 
 
 class StartMeetingRequest(BaseModel):
@@ -67,6 +67,7 @@ class MeetingResponse(BaseModel):
     message: str
     transcript: list[TranscriptSegmentResponse]
     note_path: str | None = None
+    warning: str | None = None
     error: str | None = None
 
 
@@ -82,6 +83,7 @@ class MeetingSession:
     message: str = "録音を開始しています…"
     transcript: list[Segment] = field(default_factory=list)
     note_path: str | None = None
+    warning: str | None = None
     error: str | None = None
     _thread: Thread | None = field(default=None, init=False, repr=False)
     _lock: Lock = field(default_factory=Lock, init=False, repr=False)
@@ -118,6 +120,7 @@ class MeetingSession:
                     for segment in self.transcript
                 ],
                 note_path=self.note_path,
+                warning=self.warning,
                 error=self.error,
             )
 
@@ -134,6 +137,7 @@ class MeetingSession:
                 recorder=self.recorder,
                 on_status=self._set_status,
                 on_segments=self._append_segments,
+                on_warning=self._set_warning,
             )
         except Exception as exc:  # UIへ失敗理由を返し、サーバープロセスは継続する。
             with self._lock:
@@ -142,10 +146,14 @@ class MeetingSession:
                 self.message = "録音処理に失敗しました。"
             return
 
+        # 終了理由は終了コードで判定し、メッセージ文言には依存させない。
         with self._lock:
-            if exit_code == 0:
+            if exit_code == EXIT_SUCCESS:
                 self.phase = "completed"
                 self.message = "会議ノートを生成しました。"
+            elif exit_code == EXIT_NO_SPEECH:
+                # 失敗ではないため error は設定せず、理由は message のまま残す。
+                self.phase = "no_speech"
             else:
                 self.phase = "failed"
                 self.error = self.message
@@ -155,6 +163,10 @@ class MeetingSession:
         with self._lock:
             self.transcript.extend(segments)
             self.phase = "transcribing"
+
+    def _set_warning(self, message: str) -> None:
+        with self._lock:
+            self.warning = message
 
     def _set_status(self, message: str) -> None:
         with self._lock:
