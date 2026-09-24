@@ -22,7 +22,7 @@ from app.cli import (
     run_record,
 )
 from app.audio import AudioRecorder
-from app.llm import MeetingAnalysis, Task
+from app.llm import LlmError, MeetingAnalysis, Task
 from app.settings import settings
 from app.stt import Segment, SttError, SttProvider
 from wav_fixtures import silence, tone, write_float_wav
@@ -92,6 +92,14 @@ class FakeRecorder(AudioRecorder):
         self.output_dir = output_dir
         self.chunk_seconds = chunk_seconds
         return 0
+
+
+class NeverCalledRecorder(AudioRecorder):
+    """呼び出されてはいけないテスト用録音器。"""
+
+    def record(self, output_dir: Path, chunk_seconds: int) -> int:
+        """設定不足のまま録音が始まったことを検知する。"""
+        raise AssertionError("設定が足りない場合は、録音を始めてはいけない。")
 
 
 class FakeMeetingRecorder(AudioRecorder):
@@ -198,6 +206,26 @@ class CliTest(unittest.TestCase):
             self.assertIn("title: \"定例MTG\"", output_path.read_text(encoding="utf-8"))
             self.assertTrue(output_path.with_suffix(".transcript.txt").is_file())
 
+    def test_run_record_stops_before_recording_without_stt_key(self) -> None:
+        """STTのキーが無い場合は、録音を始める前に止める。"""
+        args = argparse.Namespace(title="設定テスト", participants=[], tags=[], keep_transcript=False)
+
+        with patch("app.cli.settings", replace(settings, openai_api_key=None)):
+            with self.assertRaises(SttError) as raised:
+                run_record(args, recorder=NeverCalledRecorder(), analyzer=FakeAnalyzer())
+
+        self.assertIn("OPENAI_API_KEY", str(raised.exception))
+
+    def test_run_record_stops_before_recording_without_llm_key(self) -> None:
+        """要約用のキーが無い場合も、録音を始める前に止める。"""
+        args = argparse.Namespace(title="設定テスト", participants=[], tags=[], keep_transcript=False)
+
+        with patch("app.llm.anthropic.settings", replace(settings, anthropic_api_key=None)):
+            with self.assertRaises(LlmError) as raised:
+                run_record(args, recorder=NeverCalledRecorder(), stt_provider=FakeSttProvider())
+
+        self.assertIn("ANTHROPIC_API_KEY", str(raised.exception))
+
     def test_run_record_transcribes_whole_recording_and_writes_note(self) -> None:
         """録音停止後、会議全体の音声を1回だけ文字起こししてノートを生成する。"""
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -301,7 +329,7 @@ class CliTest(unittest.TestCase):
         exit_code, statuses, notes_dir, recording_dir = self._run_record(FakeMeetingRecorder(), FailingSttProvider())
 
         self.assertEqual(exit_code, EXIT_FAILED)
-        self.assertIn("文字起こしに失敗しました", statuses[-2])
+        self.assertIn("文字起こしに失敗しました", statuses[-1])
         self.assertIn(RECORDING_FILENAME, statuses[-1])
         self.assertFalse(notes_dir.exists())
         self.assertTrue((recording_dir / RECORDING_FILENAME).is_file())

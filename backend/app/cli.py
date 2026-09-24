@@ -142,6 +142,7 @@ def run_record(
     on_warning: Callable[[str], None] | None = None,
 ) -> int:
     """録音を1ファイルとして取り、停止後にまとめて文字起こしして会議ノートを保存する。"""
+    _ensure_providers_configured(stt_provider, analyzer)
     output_dir = _resolve_recording_output_dir()
     recording_path = output_dir / RECORDING_FILENAME
     active_recorder = recorder if recorder is not None else MacOsAudioRecorder()
@@ -182,8 +183,10 @@ def run_record(
         segments = provider.transcribe(audio_path)
     except SttError as exc:
         # 録音は残すので、同じ音声から何度でもやり直せる。
-        report_status(f"文字起こしに失敗しました: {exc}")
-        report_status(f"録音は残してあります。`python -m app.cli {recording_path}` で再実行できます。")
+        report_status(
+            f"文字起こしに失敗しました: {exc}\n"
+            f"録音は残してあります。`python -m app.cli {recording_path}` で再実行できます。"
+        )
         return EXIT_FAILED
     if on_segments is not None and segments:
         on_segments(segments)
@@ -206,6 +209,20 @@ def run_record(
         report_status=report_status,
     )
     return EXIT_SUCCESS
+
+
+def _ensure_providers_configured(
+    stt_provider: SttProvider | None, analyzer: MeetingAnalyzer | None
+) -> None:
+    """録音を始める前に、設定不足で必ず失敗する状態を見つけて止める。
+
+    1時間録音したあとにキーの不備で会議ノートを作れない、という事態を避ける。
+    """
+    if stt_provider is None and not settings.openai_api_key:
+        raise SttError("OPENAI_API_KEY が設定されていません。.env を確認してください。")
+    if analyzer is None:
+        # 生成時にキーとモデルの不足を検査するため、ここで一度作って捨てる。
+        create_default_analyzer()
 
 
 def _write_transcript(path: Path, transcript: str) -> None:
