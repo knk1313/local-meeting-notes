@@ -19,7 +19,7 @@ Notta などの文字起こしSaaSは、
 ## ゴール
 
 1. Macで再生されるシステム音声とマイク音声を録音する
-2. 録音中に音声を短いチャンクへ分割し、準リアルタイムで文字起こしする
+2. 録音を1本の音声ファイルとして保存し、終了後にまとめて文字起こしする
 3. 会議終了後に文字起こし結果をLLMへ渡し、要約とタスクに分解する
 4. 会議ごとにメタ情報付きで出力する
 5. 出力先をGitリポジトリとして管理できるようにする
@@ -31,7 +31,7 @@ Notta などの文字起こしSaaSは、
 flowchart LR
     A[マイク音声] --> C["macOS録音層<br/>(ScreenCaptureKit)"]
     B["Macのシステム音声<br/>(Zoom / Meet / Teams等)"] --> C
-    C --> D["チャンク分割<br/>(15〜30秒)"]
+    C --> D["録音全体を1ファイルへ<br/>(recording.wav)"]
     D --> E["STTプロバイダ抽象化層<br/>(OpenAI)"]
     E --> F["文字起こし結果<br/>(話者ラベル付き・逐次追加)"]
     F --> G["ローカル画面 / CLIへ進捗表示"]
@@ -41,22 +41,25 @@ flowchart LR
     K --> L[notes/]
 ```
 
-音声は15〜30秒程度のチャンクへ分割し、録音中に順次STTへ渡す。これにより、録音を継続しながら準リアルタイムで文字起こし結果を追加する。会議終了後、全チャンクの文字起こしをまとめてClaude APIへ渡し、要約・タスク抽出とMarkdown出力を行う。
+録音中は分割せず、会議全体を1本の音声ファイルとして保存する。録音を停止したあと、その1ファイルをまとめてSTTへ渡す。
+文章の途中で切れないため文字起こしの精度が落ちにくく、話者分離のラベルも会議全体で一貫する。
+続けて文字起こし全文をClaude APIへ渡し、要約・タスク抽出とMarkdown出力を行う。
 
 ## 主要機能要件
 
 ### 1. 音声キャプチャ
 - MVPはmacOS 15以降を対象とする
-- Macで再生される全システム音声（Zoom / Google Meet / Microsoft Teams等）と、既定のマイク入力を1本の音声チャンクへミックスする
+- Macで再生される全システム音声（Zoom / Google Meet / Microsoft Teams等）と、既定のマイク入力を1本の音声へミックスする
 - macOS標準の`ScreenCaptureKit`を利用する
-- 録音中に15〜30秒ごとの音声チャンクを生成し、文字起こしキューへ順次渡す
+- 録音は会議全体で1ファイルとし、停止後に文字起こしへ渡す
 
 ### 2. 文字起こし（STT）
 - プロバイダを抽象化し、将来OpenAI / Google Speech-to-Text を切り替え可能にする
 - 話者分離（diarization）に対応
   - 第一候補: OpenAI `gpt-4o-transcribe-diarize`
   - 代替: Google Speech-to-Text の `speaker_diarization_config`
-- OpenAI STTへ渡す各音声チャンクは25MB以下にする
+- OpenAI STTの上限に合わせ、25MBを超える録音はAAC(m4a)へ圧縮してから渡す
+- 30秒を超える音声は`chunking_strategy="auto"`を指定し、発話区間の検出はAPI側に任せる
 
 ### 3. タスク分解（LLM）
 - Claude API に文字起こし全文を渡し、以下を生成
@@ -134,23 +137,32 @@ source .venv/bin/activate
 python -m app record --title "定例MTG" --participant "田中" --tag project-a --keep-transcript
 ```
 
-既定ではリポジトリ直下の`data/recordings_YYYYMMDDHHMM/`へ保存する。録音全体は`recording.wav`として1本にまとめ、逐次文字起こし用の15秒ごとのWAVチャンクは`chunks/`へ分けて保存する。完成したチャンクは連番順にOpenAI STTへ送られ、文字起こし結果がCLIへ追加表示される。`Ctrl+C`で録音を停止すると、取得済みの文字起こし全文から要約・タスクを抽出し、Markdown会議ノートを自動保存する。
+既定ではリポジトリ直下の`data/recordings_YYYYMMDDHHMM/`へ保存する。録音全体は`recording.wav`の1ファイルにまとまる。
+`Ctrl+C`で録音を停止すると、その1ファイルを文字起こしし、全文から要約・タスクを抽出してMarkdown会議ノートを自動保存する。
 
-チャンクの長さは`.env`の`RECORDING_CHUNK_SECONDS`で設定する（既定: 15秒）。録音先・ノート出力先はそれぞれ`data/`・`NOTES_DIR`に固定する。
+25MBを超える録音は、OpenAI STTへ渡す前にmacOS標準の`afconvert`でモノラルAAC(m4a)へ圧縮する（32kbpsで約100分ぶんが25MBに収まる）。
+`.env`の`RECORDING_CHUNK_SECONDS`は、録音ファイルへ書き出す単位（既定: 15秒）で、文字起こしの分割には影響しない。
+録音先・ノート出力先はそれぞれ`data/`・`NOTES_DIR`に固定する。
 
-発話が含まれないチャンクはSTTへ送らずスキップする。また、画面スリープ・画面ロック・外部ディスプレイの
+発話が含まれない録音はSTTへ送らずに破棄する。また、画面スリープ・画面ロック・外部ディスプレイの
 切断でキャプチャが中断された場合は、無音を録り続けずにその時点で録音を終了し、取得できたぶんから
 会議ノートを生成する。
 
 ## 途中で落ちた録音から会議ノートを作り直す
 
-録音中の文字起こしは、確定したチャンクごとに録音ディレクトリの`transcript.txt`へ追記される。
-要約の生成に失敗した場合や処理を中断した場合は、このファイルから会議ノートを作り直せる。
+文字起こしが終わると、要約より先に録音ディレクトリの`transcript.txt`へ全文が保存される。
+要約の生成に失敗した場合や処理を中断した場合は、このファイルから会議ノートを作り直せる（STTの再実行は不要）。
 
 ```sh
 cd backend
 source .venv/bin/activate
 python -m app note ../data/recordings_YYYYMMDDHHMM/transcript.txt --title "定例MTG" --participant "田中"
+```
+
+文字起こしからやり直す場合は、残っている録音ファイルをそのまま渡す。
+
+```sh
+python -m app.cli ../data/recordings_YYYYMMDDHHMM/recording.wav --title "定例MTG"
 ```
 
 ## ローカルAPIを起動する
@@ -194,7 +206,7 @@ local-meeting-notes/
 │   │   ├── main.py
 │   │   ├── stt/          # STTプロバイダ抽象化層
 │   │   ├── llm/          # タスク分解ロジック
-│   │   ├── audio/        # 音声キャプチャ・チャンク処理
+│   │   ├── audio/        # 音声キャプチャ・圧縮・音量判定
 │   │   └── output/       # Markdown生成・Git連携
 │   └── requirements.txt
 ├── notes/                 # 出力先
