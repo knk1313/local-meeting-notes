@@ -12,12 +12,15 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from openai import OpenAI, OpenAIError
+from openai import AuthenticationError, OpenAI, OpenAIError, RateLimitError
 
 from app.stt.base import Segment, SttError, SttProvider
 
 #: 話者分離に対応した既定モデル。
 DEFAULT_MODEL = "gpt-4o-transcribe-diarize"
+
+#: 残高不足を表す OpenAI のエラーコード。リトライでは回復しない。
+INSUFFICIENT_QUOTA_CODE = "insufficient_quota"
 
 #: API が受け付けるファイルサイズの上限 (25MB)。
 MAX_FILE_SIZE_BYTES = 25 * 1024 * 1024
@@ -62,6 +65,20 @@ class OpenAiSttProvider(SttProvider):
                     # 30 秒を超える音声では指定が必要。
                     chunking_strategy="auto",
                 )
+        except AuthenticationError as exc:
+            raise SttError(
+                "OpenAI APIキーが拒否されました。.env の OPENAI_API_KEY を確認してください。"
+            ) from exc
+        except RateLimitError as exc:
+            # 残高不足はリトライしても回復しないため、レート制限とは分けて伝える。
+            if _error_code(exc) == INSUFFICIENT_QUOTA_CODE:
+                raise SttError(
+                    "OpenAIのクレジット残高が不足しています。"
+                    "https://platform.openai.com/settings/organization/billing で確認してください。"
+                ) from exc
+            raise SttError(
+                "OpenAI APIのレート制限に達しました。しばらく待ってから再実行してください。"
+            ) from exc
         except OpenAIError as exc:
             raise SttError(f"OpenAI の文字起こしに失敗しました: {path}") from exc
 
@@ -88,6 +105,17 @@ class OpenAiSttProvider(SttProvider):
                 f"音声ファイルが上限 {MAX_FILE_SIZE_BYTES} バイトを超えています "
                 f"({size} バイト): {path}"
             )
+
+
+def _error_code(error: OpenAIError) -> str | None:
+    """OpenAIのエラー応答からエラーコードを取り出す。取れない場合はNone。"""
+    body = getattr(error, "body", None)
+    if isinstance(body, dict):
+        detail = body.get("error")
+        if isinstance(detail, dict) and isinstance(detail.get("code"), str):
+            return detail["code"]
+    code = getattr(error, "code", None)
+    return code if isinstance(code, str) else None
 
 
 def _to_segments(response: Any) -> list[Segment]:

@@ -13,22 +13,14 @@
 
 ## コマンド
 
-フロントエンドの作業は `frontend/` で行う (パッケージマネージャは pnpm)。
-
-| 用途 | コマンド |
-|---|---|
-| 依存インストール | `pnpm install` |
-| 開発サーバ | `pnpm dev` |
-| ビルド (型チェック込み) | `pnpm build` |
-| Lint | `pnpm lint` |
-| ビルド結果のプレビュー | `pnpm preview` |
-
-バックエンドの作業は `backend/` で行う。仮想環境は `backend/.venv`。
+作業は `backend/` で行う。仮想環境は `backend/.venv`。
 
 | 用途 | コマンド |
 |---|---|
 | 仮想環境の有効化 | `source .venv/bin/activate` |
 | 依存インストール | `pip install -r requirements.txt` |
+| テスト | `python -m unittest discover -s tests -t tests` |
+| ローカルAPIの起動 | `python -m app.api` |
 
 ## git 操作
 

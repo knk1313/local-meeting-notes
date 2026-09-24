@@ -3,18 +3,34 @@
 from __future__ import annotations
 
 import argparse
+import shutil
 import sys
 from datetime import date, datetime
 from pathlib import Path
-from threading import Event, Thread
-from typing import Sequence
+from typing import Callable, Sequence
 
-from app.audio import AudioRecorder, MacOsAudioRecorder
-from app.llm import MeetingAnalyzer, create_default_analyzer
+from app.audio import AudioCaptureError, AudioRecorder, MacOsAudioRecorder
+from app.audio.compress import compress_for_transcription
+from app.audio.level import is_silent
+from app.llm import LlmError, MeetingAnalyzer, create_default_analyzer
 from app.output import MeetingMetadata, write_meeting_note
 from app.settings import PROJECT_ROOT, settings
-from app.stt import IncrementalChunkTranscriber, Segment, SttProvider
-from app.stt.openai import OpenAiSttProvider
+from app.stt import Segment, SttError, SttProvider
+from app.stt.openai import MAX_FILE_SIZE_BYTES, OpenAiSttProvider
+
+
+#: 録音ヘルパーが書き出す、会議全体の音声ファイル名。
+RECORDING_FILENAME = "recording.wav"
+
+#: 文字起こし全文を残すファイル名。要約が失敗しても会議ノートを作り直せるようにする。
+TRANSCRIPT_FILENAME = "transcript.txt"
+
+#: 録音が正常に終わり、会議ノートを保存した。
+EXIT_SUCCESS = 0
+#: 録音または文字起こしに失敗した。録音データは調査のため残す。
+EXIT_FAILED = 1
+#: 発話を検出できず、会議ノートを生成しなかった。録音データは破棄する。
+EXIT_NO_SPEECH = 2
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -23,6 +39,18 @@ def build_parser() -> argparse.ArgumentParser:
         description="音声ファイルを文字起こし・要約し、会議ノートをMarkdownで保存します。"
     )
     parser.add_argument("audio_path", type=Path, metavar="AUDIO_PATH", help="音声ファイルのパス")
+    _add_metadata_arguments(parser)
+    return parser
+
+
+def build_note_parser() -> argparse.ArgumentParser:
+    """保存済み文字起こしから会議ノートを作るコマンドの引数パーサーを作成する。"""
+    parser = argparse.ArgumentParser(
+        description="録音中に保存した文字起こし(transcript.txt)から会議ノートを生成します。"
+    )
+    parser.add_argument(
+        "transcript_path", type=Path, metavar="TRANSCRIPT_PATH", help="文字起こしファイルのパス"
+    )
     _add_metadata_arguments(parser)
     return parser
 
@@ -79,9 +107,25 @@ def run_pipeline(
 
     print("文字起こし中...")
     provider = stt_provider if stt_provider is not None else OpenAiSttProvider()
+    audio_path = compress_for_transcription(audio_path, max_bytes=MAX_FILE_SIZE_BYTES, on_status=print)
     transcript = format_transcript(provider.transcribe(audio_path))
     if not transcript:
         raise RuntimeError("文字起こし結果が空です。")
+
+    return _write_analysis_result(args, transcript, notes_dir=notes_dir or settings.notes_dir, analyzer=analyzer)
+
+
+def run_note(
+    args: argparse.Namespace,
+    *,
+    analyzer: MeetingAnalyzer | None = None,
+    notes_dir: Path | None = None,
+) -> Path:
+    """録音時に保存した文字起こしから、会議ノートを作り直す。"""
+    transcript_path = args.transcript_path.expanduser()
+    transcript = transcript_path.read_text(encoding="utf-8").strip()
+    if not transcript:
+        raise ValueError(f"文字起こしが空です: {transcript_path}")
 
     return _write_analysis_result(args, transcript, notes_dir=notes_dir or settings.notes_dir, analyzer=analyzer)
 
@@ -93,66 +137,111 @@ def run_record(
     stt_provider: SttProvider | None = None,
     analyzer: MeetingAnalyzer | None = None,
     notes_dir: Path | None = None,
-    poll_seconds: float = 0.25,
+    on_status: Callable[[str], None] | None = None,
+    on_segments: Callable[[list[Segment]], None] | None = None,
+    on_warning: Callable[[str], None] | None = None,
 ) -> int:
-    """録音中にチャンクを逐次文字起こしし、停止後に会議ノートを保存する。"""
+    """録音を1ファイルとして取り、停止後にまとめて文字起こしして会議ノートを保存する。"""
+    _ensure_providers_configured(stt_provider, analyzer)
     output_dir = _resolve_recording_output_dir()
-    chunks_dir = output_dir / "chunks"
-    active_provider = stt_provider
+    recording_path = output_dir / RECORDING_FILENAME
+    active_recorder = recorder if recorder is not None else MacOsAudioRecorder()
 
-    def transcribe_chunk(path: Path) -> list[Segment]:
-        nonlocal active_provider
-        if active_provider is None:
-            active_provider = OpenAiSttProvider()
-        return active_provider.transcribe(path)
+    def report_status(message: str) -> None:
+        print(message)
+        if on_status is not None:
+            on_status(message)
 
-    incremental_transcriber = IncrementalChunkTranscriber(
-        chunks_dir,
-        chunk_seconds=settings.recording_chunk_seconds,
-        transcribe=transcribe_chunk,
-        on_status=print,
+    def report_warning(message: str) -> None:
+        print(message)
+        if on_warning is not None:
+            on_warning(message)
+
+    report_status(f"録音セッションの出力先: {output_dir}")
+    report_status("録音中... 停止すると文字起こしと会議ノートを生成します。")
+    exit_code = active_recorder.record(output_dir, settings.recording_chunk_seconds)
+
+    # 権限拒否や画面スリープによる中断は、録音ヘルパーのstderrにしか理由が出ない。
+    reason = active_recorder.last_error or f"終了コード {exit_code}"
+    if exit_code != EXIT_SUCCESS and not recording_path.is_file():
+        report_status(f"録音に失敗しました: {reason}")
+        return EXIT_FAILED
+    if exit_code != EXIT_SUCCESS:
+        report_warning(f"録音が途中で終了しました（{reason}）。取得できたぶんで会議ノートを作成します。")
+
+    if not recording_path.is_file() or is_silent(recording_path):
+        _discard_recording(output_dir, report_status)
+        report_status("発話を検出できませんでした。会議ノートは作成せず、録音データは破棄しました。")
+        return EXIT_NO_SPEECH
+
+    report_status("文字起こし中...")
+    provider = stt_provider if stt_provider is not None else OpenAiSttProvider()
+    audio_path = compress_for_transcription(
+        recording_path, max_bytes=MAX_FILE_SIZE_BYTES, on_status=report_status
     )
-    stop_watching = Event()
-
-    def watch_chunks() -> None:
-        while not stop_watching.wait(poll_seconds):
-            incremental_transcriber.transcribe_available()
-
-    watcher = Thread(target=watch_chunks, name="incremental-stt", daemon=True)
-
-    print(f"録音セッションの出力先: {output_dir}")
-    print("録音中... 停止すると要約と会議ノートを生成します。")
-    watcher.start()
     try:
-        exit_code = (recorder or MacOsAudioRecorder()).record(output_dir, settings.recording_chunk_seconds)
-    finally:
-        stop_watching.set()
-        watcher.join()
-
-    # 停止直前に完成したチャンクも取りこぼさず処理する。
-    incremental_transcriber.transcribe_available()
-    if exit_code != 0:
-        print(f"録音が異常終了しました: {exit_code}")
-        return exit_code
-
-    segments = incremental_transcriber.segments
-    if not segments:
-        if any(chunks_dir.glob("chunk-*.wav")):
-            print("文字起こし結果を取得できなかったため、会議ノートは生成しませんでした。")
-            return 1
-        return 0
+        segments = provider.transcribe(audio_path)
+    except SttError as exc:
+        # 録音は残すので、同じ音声から何度でもやり直せる。
+        report_status(
+            f"文字起こしに失敗しました: {exc}\n"
+            f"録音は残してあります。`python -m app.cli {recording_path}` で再実行できます。"
+        )
+        return EXIT_FAILED
+    if on_segments is not None and segments:
+        on_segments(segments)
 
     transcript = format_transcript(segments)
+    if not transcript:
+        _discard_recording(output_dir, report_status)
+        report_status("発話を検出できませんでした。会議ノートは作成せず、録音データは破棄しました。")
+        return EXIT_NO_SPEECH
+
+    # 要約が失敗しても作り直せるよう、文字起こしを録音ディレクトリへ残す。
+    _write_transcript(output_dir / TRANSCRIPT_FILENAME, transcript)
+    report_status(f"文字起こしを保存しました: {output_dir / TRANSCRIPT_FILENAME}")
+
     _write_analysis_result(
         args,
         transcript,
         notes_dir=notes_dir or settings.notes_dir,
         analyzer=analyzer,
+        report_status=report_status,
     )
-    if incremental_transcriber.failed_paths:
-        failed_paths = ", ".join(path.name for path in incremental_transcriber.failed_paths)
-        print(f"文字起こしに失敗したチャンク: {failed_paths}")
-    return 0
+    return EXIT_SUCCESS
+
+
+def _ensure_providers_configured(
+    stt_provider: SttProvider | None, analyzer: MeetingAnalyzer | None
+) -> None:
+    """録音を始める前に、設定不足で必ず失敗する状態を見つけて止める。
+
+    1時間録音したあとにキーの不備で会議ノートを作れない、という事態を避ける。
+    """
+    if stt_provider is None and not settings.openai_api_key:
+        raise SttError("OPENAI_API_KEY が設定されていません。.env を確認してください。")
+    if analyzer is None:
+        # 生成時にキーとモデルの不足を検査するため、ここで一度作って捨てる。
+        create_default_analyzer()
+
+
+def _write_transcript(path: Path, transcript: str) -> None:
+    """文字起こし全文をファイルへ書き出す。失敗しても後続の処理は続ける。"""
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f"{transcript}\n", encoding="utf-8")
+    except OSError:
+        return
+
+
+def _discard_recording(output_dir: Path, report_status: Callable[[str], None]) -> None:
+    """会議ノートにならなかった録音データを削除する。失敗しても処理は続ける。"""
+    if not output_dir.exists():
+        return
+    try:
+        shutil.rmtree(output_dir)
+    except OSError as exc:
+        report_status(f"録音データを削除できませんでした: {output_dir}（{exc}）")
 
 
 def _resolve_recording_output_dir() -> Path:
@@ -167,13 +256,14 @@ def _write_analysis_result(
     *,
     notes_dir: Path,
     analyzer: MeetingAnalyzer | None,
+    report_status: Callable[[str], None] = print,
 ) -> Path:
     """文字起こし全文を分析して会議ノートを保存する。"""
-    print("要約・タスクを抽出中...")
+    report_status("要約・タスクを抽出中...")
     meeting_analyzer = analyzer if analyzer is not None else create_default_analyzer()
     analysis = meeting_analyzer.analyze(transcript)
 
-    print("Markdownを書き出し中...")
+    report_status("Markdownを書き出し中...")
     metadata = MeetingMetadata(
         title=args.title or default_title(),
         date=date.today(),
@@ -185,9 +275,9 @@ def _write_analysis_result(
     if args.keep_transcript:
         transcript_path = output_path.with_suffix(".transcript.txt")
         transcript_path.write_text(transcript + "\n", encoding="utf-8")
-        print(f"デバッグ用文字起こし: {transcript_path}")
+        report_status(f"デバッグ用文字起こし: {transcript_path}")
 
-    print(f"会議ノートを保存しました: {output_path}")
+    report_status(f"会議ノートを保存しました: {output_path}")
     return output_path
 
 
@@ -203,11 +293,19 @@ def _format_timestamp_range(start: float | None, end: float | None) -> str:
 def main(argv: Sequence[str] | None = None) -> int:
     """CLIを実行する。"""
     arguments = list(sys.argv[1:] if argv is None else argv)
-    if arguments[:1] == ["record"]:
-        args = build_record_parser().parse_args(arguments[1:])
-        return run_record(args)
-    args = build_parser().parse_args(arguments)
-    run_pipeline(args)
+    try:
+        if arguments[:1] == ["record"]:
+            args = build_record_parser().parse_args(arguments[1:])
+            return run_record(args)
+        if arguments[:1] == ["note"]:
+            run_note(build_note_parser().parse_args(arguments[1:]))
+            return 0
+        args = build_parser().parse_args(arguments)
+        run_pipeline(args)
+    except (AudioCaptureError, SttError, LlmError, OSError, ValueError) as exc:
+        # 想定済みの失敗は、traceback ではなく理由だけを表示する。
+        print(f"エラー: {exc}", file=sys.stderr)
+        return 1
     return 0
 
 

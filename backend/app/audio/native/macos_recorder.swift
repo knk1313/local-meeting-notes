@@ -6,7 +6,8 @@ import ScreenCaptureKit
 
 let sampleRate = 48_000.0
 let masterRecordingFilename = "recording.wav"
-let chunksDirectoryName = "chunks"
+/// 画面スリープや外部ディスプレイの切断などでキャプチャが中断されたときの終了コード。
+let streamStoppedExitCode: Int32 = 3
 
 enum RecorderError: LocalizedError {
     case invalidArguments(String)
@@ -68,7 +69,6 @@ struct RecorderArguments {
 final class ChunkMixer {
     private let lock = NSLock()
     private let outputDirectory: URL
-    private let chunksDirectory: URL
     private let chunkSeconds: Int
     private let framesPerChunk: Int
     private var masterAudioFile: AVAudioFile?
@@ -84,7 +84,6 @@ final class ChunkMixer {
 
     init(outputDirectory: URL, chunkSeconds: Int) {
         self.outputDirectory = outputDirectory
-        self.chunksDirectory = outputDirectory.appendingPathComponent(chunksDirectoryName, isDirectory: true)
         self.chunkSeconds = chunkSeconds
         self.framesPerChunk = Int(sampleRate) * chunkSeconds
     }
@@ -122,6 +121,9 @@ final class ChunkMixer {
             writeChunk(index)
         }
         chunks.removeAll()
+
+        // AVAudioFileはここで解放しないとWAVヘッダのサイズが0のままになる。
+        masterAudioFile = nil
     }
 
     private func append(_ buffer: AVAudioPCMBuffer, firstFrame: Int, source: SCStreamOutputType) {
@@ -188,7 +190,14 @@ final class ChunkMixer {
         }
 
         writeMasterRecording(buffer, format: format)
-        writeSttChunk(buffer, index: index, format: format)
+        reportProgress(secondsRecorded: (index + 1) * chunkSeconds)
+    }
+
+    private func reportProgress(secondsRecorded: Int) {
+        let hours = secondsRecorded / 3600
+        let minutes = (secondsRecorded % 3600) / 60
+        let seconds = secondsRecorded % 60
+        print(String(format: "録音中: %02d:%02d:%02d", hours, minutes, seconds))
     }
 
     private func writeMasterRecording(_ buffer: AVAudioPCMBuffer, format: AVAudioFormat) {
@@ -205,31 +214,6 @@ final class ChunkMixer {
             try masterAudioFile?.write(from: buffer)
         } catch {
             fputs("録音全体ファイルの書き出しに失敗しました: \(error.localizedDescription)\n", stderr)
-        }
-    }
-
-    private func writeSttChunk(_ buffer: AVAudioPCMBuffer, index: Int, format: AVAudioFormat) {
-        let filename = String(format: "chunk-%05d.wav", index + 1)
-        let outputURL = chunksDirectory.appendingPathComponent(filename)
-        let temporaryURL = chunksDirectory.appendingPathComponent(".partial-\(filename)")
-        do {
-            try FileManager.default.createDirectory(at: chunksDirectory, withIntermediateDirectories: true)
-            try? FileManager.default.removeItem(at: temporaryURL)
-            do {
-                let audioFile = try AVAudioFile(
-                    forWriting: temporaryURL,
-                    settings: format.settings,
-                    commonFormat: .pcmFormatFloat32,
-                    interleaved: false
-                )
-                try audioFile.write(from: buffer)
-            }
-            try? FileManager.default.removeItem(at: outputURL)
-            try FileManager.default.moveItem(at: temporaryURL, to: outputURL)
-            print("STT用チャンクを書き出しました: \(outputURL.path)")
-        } catch {
-            try? FileManager.default.removeItem(at: temporaryURL)
-            fputs("STT用チャンクの書き出しに失敗しました: \(error.localizedDescription)\n", stderr)
         }
     }
 
@@ -372,8 +356,11 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
     }
 
     func stream(_ stream: SCStream, didStopWithError error: Error) {
-        fputs("録音ストリームが停止しました: \(error.localizedDescription)\n", stderr)
+        // ストリームが死んだまま無音を録り続けないよう、ここで録音を終了する。
+        // 画面スリープ・画面ロック・外部ディスプレイの抜き差しで発生する。
+        fputs("録音が中断されました: \(error.localizedDescription)\n", stderr)
         mixer.finish()
+        exit(streamStoppedExitCode)
     }
 }
 

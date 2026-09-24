@@ -6,7 +6,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from anthropic import APIError, Anthropic
+from anthropic import APIError, Anthropic, AuthenticationError
 
 from app.llm.base import LlmError, MeetingAnalysis, MeetingAnalyzer, Task
 from app.settings import settings
@@ -14,6 +14,9 @@ from app.settings import settings
 
 PROMPT_PATH = Path(__file__).resolve().parents[1] / "prompts" / "meeting_analysis.md"
 TOOL_NAME = "submit_meeting_analysis"
+
+#: 残高不足を表す Anthropic のエラーメッセージ断片。リトライでは回復しない。
+CREDIT_BALANCE_MESSAGE = "credit balance"
 
 MEETING_ANALYSIS_TOOL = {
     "name": TOOL_NAME,
@@ -96,11 +99,22 @@ class ClaudeMeetingAnalyzer(MeetingAnalyzer):
                 tools=[MEETING_ANALYSIS_TOOL],
                 tool_choice={"type": "tool", "name": TOOL_NAME},
             )
+        except AuthenticationError as exc:
+            raise LlmError(
+                "Anthropic APIキーが拒否されました。.env の ANTHROPIC_API_KEY を確認してください。"
+            ) from exc
         except APIError as exc:
-            if "anthropic-workspace-id is required" in str(exc):
+            message = str(exc)
+            if "anthropic-workspace-id is required" in message:
                 raise LlmError(
                     "このANTHROPIC_API_KEYにはWorkspace IDが必要です。"
                     " .env に ANTHROPIC_WORKSPACE_ID を設定してください。"
+                ) from exc
+            # 残高不足はリトライしても回復しないため、理由をそのまま伝える。
+            if CREDIT_BALANCE_MESSAGE in message.lower():
+                raise LlmError(
+                    "Anthropicのクレジット残高が不足しています。"
+                    "https://console.anthropic.com/settings/billing で確認してください。"
                 ) from exc
             raise LlmError("Claudeによる会議分析に失敗しました。") from exc
 
