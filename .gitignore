@@ -38,6 +38,10 @@ recordings/
 backend/app/audio/__pycache__/
 backend/app/audio/**/*.pyc
 
+# --- 録音データ（音声チャンク・文字起こしの中間ファイル） ---
+data/*
+!data/.gitkeep
+
 # --- 生成された会議ノート ---
 notes/*
 !notes/.gitkeep
