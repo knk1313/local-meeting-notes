@@ -5,6 +5,8 @@ from __future__ import annotations
 import argparse
 import shutil
 import sys
+import tempfile
+from dataclasses import replace
 from datetime import date, datetime
 from pathlib import Path
 from typing import Callable, Sequence
@@ -12,6 +14,7 @@ from typing import Callable, Sequence
 from app.audio import AudioCaptureError, AudioRecorder, MacOsAudioRecorder
 from app.audio.compress import compress_for_transcription
 from app.audio.level import is_silent
+from app.audio.split import split_for_transcription
 from app.llm import LlmError, MeetingAnalyzer, create_default_analyzer
 from app.output import MeetingMetadata, write_meeting_note
 from app.settings import PROJECT_ROOT, settings
@@ -107,8 +110,7 @@ def run_pipeline(
 
     print("文字起こし中...")
     provider = stt_provider if stt_provider is not None else OpenAiSttProvider()
-    audio_path = compress_for_transcription(audio_path, max_bytes=MAX_FILE_SIZE_BYTES, on_status=print)
-    transcript = format_transcript(provider.transcribe(audio_path))
+    transcript = format_transcript(_transcribe_audio(audio_path, provider, report_status=print))
     if not transcript:
         raise RuntimeError("文字起こし結果が空です。")
 
@@ -176,11 +178,8 @@ def run_record(
 
     report_status("文字起こし中...")
     provider = stt_provider if stt_provider is not None else OpenAiSttProvider()
-    audio_path = compress_for_transcription(
-        recording_path, max_bytes=MAX_FILE_SIZE_BYTES, on_status=report_status
-    )
     try:
-        segments = provider.transcribe(audio_path)
+        segments = _transcribe_audio(recording_path, provider, report_status=report_status)
     except SttError as exc:
         # 録音は残すので、同じ音声から何度でもやり直せる。
         report_status(
@@ -209,6 +208,40 @@ def run_record(
         report_status=report_status,
     )
     return EXIT_SUCCESS
+
+
+def _transcribe_audio(
+    path: Path,
+    provider: SttProvider,
+    *,
+    report_status: Callable[[str], None],
+) -> list[Segment]:
+    """音声全体を文字起こしする。API の上限を超える場合だけ分割して順に渡す。"""
+    with tempfile.TemporaryDirectory(prefix="local-meeting-notes-") as work_dir:
+        parts = split_for_transcription(path, parts_dir=Path(work_dir), on_status=report_status)
+        segments: list[Segment] = []
+        for number, part in enumerate(parts, start=1):
+            if len(parts) > 1:
+                report_status(f"文字起こし中... ({number}/{len(parts)})")
+            audio_path = compress_for_transcription(
+                part.path, max_bytes=MAX_FILE_SIZE_BYTES, on_status=report_status
+            )
+            segments.extend(_shift_segments(provider.transcribe(audio_path), part.start_seconds))
+        return segments
+
+
+def _shift_segments(segments: list[Segment], offset: float) -> list[Segment]:
+    """分割した音声の時刻を、録音全体の時刻へ補正する。"""
+    if not offset:
+        return segments
+    return [
+        replace(
+            segment,
+            start=None if segment.start is None else segment.start + offset,
+            end=None if segment.end is None else segment.end + offset,
+        )
+        for segment in segments
+    ]
 
 
 def _ensure_providers_configured(

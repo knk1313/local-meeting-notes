@@ -23,6 +23,9 @@ MAXIMUM_CHUNK_SECONDS = 60
 # 失敗理由として保持する、録音ヘルパーのstderr末尾の行数。
 RETAINED_ERROR_LINES = 5
 
+# 録音は続いている旨の注意書きにつく接頭辞。失敗理由としては扱わない。
+WARNING_PREFIX = "警告:"
+
 
 class MacOsAudioRecorder(AudioRecorder):
     """macOSのシステム音声と既定マイクを録音するプロバイダ。"""
@@ -87,9 +90,12 @@ class MacOsAudioRecorder(AudioRecorder):
             return
         for line in process.stderr:
             message = line.decode("utf-8", errors="replace").rstrip()
-            if message:
+            if not message:
+                continue
+            print(message, file=sys.stderr)
+            # 注意書きは失敗理由ではないため、last_error には残さない。
+            if not message.startswith(WARNING_PREFIX):
                 self._error_lines.append(message)
-                print(message, file=sys.stderr)
 
     def request_stop(self) -> None:
         """録音ヘルパーへ停止シグナルを送る。完了処理は呼び出し元で待機する。"""

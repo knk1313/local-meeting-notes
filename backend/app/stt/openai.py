@@ -80,7 +80,8 @@ class OpenAiSttProvider(SttProvider):
                 "OpenAI APIのレート制限に達しました。しばらく待ってから再実行してください。"
             ) from exc
         except OpenAIError as exc:
-            raise SttError(f"OpenAI の文字起こしに失敗しました: {path}") from exc
+            # 理由が分からないと対処できないため、APIの説明をそのまま伝える。
+            raise SttError(f"OpenAI の文字起こしに失敗しました: {_error_message(exc)}") from exc
 
         return _to_segments(response)
 
@@ -109,13 +110,30 @@ class OpenAiSttProvider(SttProvider):
 
 def _error_code(error: OpenAIError) -> str | None:
     """OpenAIのエラー応答からエラーコードを取り出す。取れない場合はNone。"""
+    code = _error_detail(error, "code")
+    if code is not None:
+        return code
+    attribute = getattr(error, "code", None)
+    return attribute if isinstance(attribute, str) else None
+
+
+def _error_message(error: OpenAIError) -> str:
+    """OpenAIのエラー応答から、利用者に見せる説明を取り出す。"""
+    return _error_detail(error, "message") or str(error)
+
+
+def _error_detail(error: OpenAIError, key: str) -> str | None:
+    """エラー応答の本文から指定のフィールドを取り出す。
+
+    ``{"error": {...}}`` で包まれている場合と、直接入っている場合の両方を見る。
+    """
     body = getattr(error, "body", None)
-    if isinstance(body, dict):
-        detail = body.get("error")
-        if isinstance(detail, dict) and isinstance(detail.get("code"), str):
-            return detail["code"]
-    code = getattr(error, "code", None)
-    return code if isinstance(code, str) else None
+    if not isinstance(body, dict):
+        return None
+    for candidate in (body.get("error"), body):
+        if isinstance(candidate, dict) and isinstance(candidate.get(key), str):
+            return candidate[key]
+    return None
 
 
 def _to_segments(response: Any) -> list[Segment]:
