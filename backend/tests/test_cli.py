@@ -189,6 +189,8 @@ class CliTest(unittest.TestCase):
     def test_run_record_resolves_timestamped_output_below_project_root(self) -> None:
         """既定の録音出力先をリポジトリ直下の日時付きディレクトリへ解決する。"""
         recorder = FakeRecorder()
+        # 実行中の録音を消さないよう、削除処理だけ差し替える。
+        self.enterContext(patch("app.cli._discard_recording"))
         args = argparse.Namespace(title=None, participants=[], tags=[], keep_transcript=False)
 
         with patch("app.cli.settings", replace(settings, recording_chunk_seconds=20)):
@@ -198,7 +200,7 @@ class CliTest(unittest.TestCase):
         self.assertEqual(exit_code, EXIT_NO_SPEECH)
         self.assertIsNotNone(recorder.output_dir)
         self.assertEqual(recorder.output_dir.parent, Path(__file__).resolve().parents[2] / "data")
-        self.assertRegex(recorder.output_dir.name, r"^recordings_\d{12}$")
+        self.assertRegex(recorder.output_dir.name, r"^recordings_\d{14}$")
         self.assertEqual(recorder.chunk_seconds, 20)
 
     def test_run_pipeline_writes_note_and_debug_transcript(self) -> None:

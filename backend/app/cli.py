@@ -318,8 +318,12 @@ def _discard_recording(output_dir: Path, report_status: Callable[[str], None]) -
 
 
 def _resolve_recording_output_dir() -> Path:
-    """録音出力先を解決し、開始日時付きのディレクトリ名を生成する。"""
-    directory_name = datetime.now().strftime("recordings_%Y%m%d%H%M")
+    """録音出力先を解決し、開始日時付きのディレクトリ名を生成する。
+
+    秒まで含める。同じ分に録り直すと、前の録音の音声を上書きし、
+    文字起こしを書き足し、無音判定で丸ごと削除してしまうため。
+    """
+    directory_name = datetime.now().strftime("recordings_%Y%m%d%H%M%S")
     return PROJECT_ROOT / "data" / directory_name
 
 

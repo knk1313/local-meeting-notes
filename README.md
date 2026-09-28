@@ -139,7 +139,7 @@ source .venv/bin/activate
 python -m app record --title "定例MTG" --participant "田中" --tag project-a --keep-transcript
 ```
 
-既定ではリポジトリ直下の`data/recordings_YYYYMMDDHHMM/`へ保存する。録音全体は`recording.wav`の1ファイルにまとまる。
+既定ではリポジトリ直下の`data/recordings_YYYYMMDDHHMMSS/`へ保存する。録音全体は`recording.wav`の1ファイルにまとまる。
 `Ctrl+C`で録音を停止すると、その1ファイルを文字起こしし、全文から要約・タスクを抽出してMarkdown会議ノートを自動保存する。
 
 25MBを超える録音は、OpenAI STTへ渡す前にmacOS標準の`afconvert`でモノラルAAC(m4a)へ圧縮する（32kbpsで約100分ぶんが25MBに収まる）。
@@ -168,13 +168,13 @@ AAC化すると先頭に1フレーム（約0.03秒）の余白が付き、API側
 ```sh
 cd backend
 source .venv/bin/activate
-python -m app note ../data/recordings_YYYYMMDDHHMM/transcript.txt --title "定例MTG" --participant "田中"
+python -m app note ../data/recordings_YYYYMMDDHHMMSS/transcript.txt --title "定例MTG" --participant "田中"
 ```
 
 文字起こしからやり直す場合は、残っている録音ファイルをそのまま渡す。
 
 ```sh
-python -m app.cli ../data/recordings_YYYYMMDDHHMM/recording.wav --title "定例MTG"
+python -m app.cli ../data/recordings_YYYYMMDDHHMMSS/recording.wav --title "定例MTG"
 ```
 
 ## ローカルAPIを起動する
