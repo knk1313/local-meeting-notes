@@ -45,6 +45,21 @@ class SplitTest(unittest.TestCase):
         self.assertAlmostEqual(parts[0].start_seconds, 0.0, places=3)
         self.assertAlmostEqual(parts[1].start_seconds, durations[0], places=3)
 
+    def test_cuts_on_frame_boundaries_for_multi_channel_audio(self) -> None:
+        """ステレオでも、チャンネルの並びが崩れない位置で区切る。"""
+        path = self.directory / "stereo.wav"
+        write_float_wav(path, tone(seconds=3) + tone(seconds=3), channels=2)
+
+        parts = split_for_transcription(
+            path, parts_dir=self.parts_dir, max_seconds=2, target_seconds=1.2, search_seconds=0.3
+        )
+
+        self.assertGreater(len(parts), 1)
+        for part in parts:
+            info = read_info(part.path)
+            self.assertEqual(info.channels, 2)
+            self.assertEqual(info.data_size % info.bytes_per_frame, 0)
+
     def test_cuts_at_the_quietest_position(self) -> None:
         """発話の途中で切らないよう、区切りは周辺で最も静かな位置に置く。"""
         path = self.directory / "recording.wav"

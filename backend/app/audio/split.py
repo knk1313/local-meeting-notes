@@ -134,7 +134,9 @@ def _quietest_cut(audio: BinaryIO, info: WavInfo, low: int, high: int) -> int:
         if quietest_energy is None or energy < quietest_energy:
             quietest_energy = energy
             quietest = low + (index + samples_per_window // 2) * bytes_per_sample
-    return min(max(quietest, low), high)
+    # 位置はサンプル単位で求めているため、最後にフレーム境界へ揃える。
+    # 途中で切るとチャンネルの並びがずれ、以降の音声が入れ替わる。
+    return _align(min(max(quietest, low), high), info.bytes_per_frame)
 
 
 def _align(position: int, bytes_per_frame: int) -> int:
