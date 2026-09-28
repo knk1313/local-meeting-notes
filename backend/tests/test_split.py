@@ -6,6 +6,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import struct
+
 from app.audio.split import split_for_transcription
 from app.audio.wav import read_info
 from wav_fixtures import silence, tone, write_float_wav
@@ -19,6 +21,20 @@ class SplitTest(unittest.TestCase):
         self.directory = Path(self._temporary.name)
         self.parts_dir = self.directory / "parts"
         self.addCleanup(self._temporary.cleanup)
+
+    def test_treats_a_broken_header_as_unreadable(self) -> None:
+        """壊れたヘッダは0除算で落とさず、読めない音声として扱う。"""
+        path = self.directory / "broken.wav"
+        data = b"\x00" * 64
+        header = b"RIFF" + struct.pack("<I", 36 + len(data)) + b"WAVE"
+        header += b"fmt " + struct.pack("<IHHIIHH", 16, 3, 0, 48_000, 0, 0, 32)  # チャンネル数0
+        header += b"data" + struct.pack("<I", len(data))
+        path.write_bytes(header + data)
+
+        self.assertIsNone(read_info(path))
+        # 分割処理も例外ではなく、そのまま渡す判断にする。
+        parts = split_for_transcription(path, parts_dir=self.parts_dir, max_seconds=1, target_seconds=1)
+        self.assertEqual([part.path for part in parts], [path])
 
     def test_keeps_short_audio_as_is(self) -> None:
         """上限に収まる音声は分割せず、元のファイルをそのまま渡す。"""
