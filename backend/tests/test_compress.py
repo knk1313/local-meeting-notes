@@ -23,7 +23,7 @@ class CompressTest(unittest.TestCase):
         path = self.directory / "recording.wav"
         write_float_wav(path, tone(seconds=0.1))
 
-        self.assertEqual(compress_for_transcription(path, max_bytes=10_000_000), path)
+        self.assertEqual(compress_for_transcription(path, max_bytes=10_000_000, work_dir=self.directory / 'work'), path)
 
     def test_compresses_audio_over_the_limit(self) -> None:
         """上限を超える音声はm4aへ変換して上限内に収める。"""
@@ -31,9 +31,14 @@ class CompressTest(unittest.TestCase):
         write_float_wav(path, tone(seconds=1))
         statuses: list[str] = []
 
-        compressed = compress_for_transcription(path, max_bytes=100_000, on_status=statuses.append)
+        compressed = compress_for_transcription(
+            path, max_bytes=100_000, work_dir=self.directory / 'work', on_status=statuses.append
+        )
 
         self.assertEqual(compressed.suffix, ".m4a")
+        # 元ファイルの隣ではなく、指定した作業ディレクトリへ書き出す。
+        self.assertEqual(compressed.parent, self.directory / "work")
+        self.assertFalse((self.directory / "recording.m4a").exists())
         self.assertLessEqual(compressed.stat().st_size, 100_000)
         self.assertLess(compressed.stat().st_size, path.stat().st_size)
         self.assertTrue(statuses[0].startswith("文字起こし用に音声を圧縮中..."))
@@ -42,7 +47,7 @@ class CompressTest(unittest.TestCase):
         """存在しないファイルは、STTプロバイダ側の検査に委ねる。"""
         path = self.directory / "missing.wav"
 
-        self.assertEqual(compress_for_transcription(path, max_bytes=1), path)
+        self.assertEqual(compress_for_transcription(path, max_bytes=1, work_dir=self.directory / 'work'), path)
 
 
 if __name__ == "__main__":

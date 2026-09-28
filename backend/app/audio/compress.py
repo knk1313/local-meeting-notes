@@ -26,9 +26,14 @@ def compress_for_transcription(
     path: Path,
     *,
     max_bytes: int,
+    work_dir: Path,
     on_status: Callable[[str], None] | None = None,
 ) -> Path:
-    """上限に収まる音声ファイルのパスを返す。元ファイルが収まっていればそのまま返す。"""
+    """上限に収まる音声ファイルのパスを返す。元ファイルが収まっていればそのまま返す。
+
+    変換後のファイルは ``work_dir`` へ書き出す。元ファイルの隣に置くと、
+    利用者が持っている同名ファイルを上書きしてしまうため。
+    """
     # 見つからない場合は、分かりやすい失敗を返せるSTTプロバイダ側の検査に任せる。
     if not path.is_file() or path.stat().st_size <= max_bytes:
         return path
@@ -37,7 +42,8 @@ def compress_for_transcription(
             f"音声を圧縮できません。{AFCONVERT_PATH} が見つかりません。"
         )
 
-    destination = path.with_suffix(".m4a")
+    work_dir.mkdir(parents=True, exist_ok=True)
+    destination = work_dir / f"{path.stem}.m4a"
     for bitrate in COMPRESSION_BITRATES:
         if on_status is not None:
             on_status(f"文字起こし用に音声を圧縮中... ({bitrate // 1000}kbps)")

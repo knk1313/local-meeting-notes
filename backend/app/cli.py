@@ -224,7 +224,7 @@ def _transcribe_audio(
             if len(parts) > 1:
                 report_status(f"文字起こし中... ({number}/{len(parts)})")
             audio_path = compress_for_transcription(
-                part.path, max_bytes=MAX_FILE_SIZE_BYTES, on_status=report_status
+                part.path, max_bytes=MAX_FILE_SIZE_BYTES, work_dir=Path(work_dir), on_status=report_status
             )
             segments.extend(_shift_segments(provider.transcribe(audio_path), part.start_seconds))
         return segments
