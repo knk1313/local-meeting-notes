@@ -53,6 +53,26 @@ class RecorderFailureTest(unittest.TestCase):
                 "録音を開始できませんでした: マイクへのアクセスが許可されていません",
             )
 
+    def test_ignores_warnings_when_reporting_the_failure_reason(self) -> None:
+        """録音が続く旨の注意書きは、失敗理由として扱わない。"""
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_path = Path(temporary_directory)
+            helper = temporary_path / "warning-recorder"
+            helper.write_text(
+                "#!/bin/sh\n"
+                'echo "警告: 録音の停止処理に失敗しました（録音データは保存済みです）" >&2\n'
+                'echo "録音を開始できませんでした: 画面収録の許可がありません" >&2\n'
+                "exit 1\n",
+                encoding="utf-8",
+            )
+            helper.chmod(helper.stat().st_mode | stat.S_IXUSR)
+            recorder = MacOsAudioRecorder()
+
+            with patch.object(MacOsAudioRecorder, "_build_binary", return_value=helper):
+                recorder.record(temporary_path / "recording", 15)
+
+            self.assertEqual(recorder.last_error, "録音を開始できませんでした: 画面収録の許可がありません")
+
     def test_last_error_is_none_without_output(self) -> None:
         """stderrへの出力が無ければ失敗理由は持たない。"""
         with tempfile.TemporaryDirectory() as temporary_directory:

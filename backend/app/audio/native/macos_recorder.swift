@@ -118,7 +118,7 @@ final class ChunkMixer {
         defer { lock.unlock() }
 
         for index in chunks.keys.sorted() {
-            writeChunk(index)
+            writeChunk(index, reportingProgress: false)
         }
         chunks.removeAll()
 
@@ -163,12 +163,12 @@ final class ChunkMixer {
 
         let completeUntil = min(latestSystemFrame, latestMicrophoneFrame) / framesPerChunk - 1
         for index in chunks.keys.filter({ $0 <= completeUntil }).sorted() {
-            writeChunk(index)
+            writeChunk(index, reportingProgress: true)
             chunks[index] = nil
         }
     }
 
-    private func writeChunk(_ index: Int) {
+    private func writeChunk(_ index: Int, reportingProgress: Bool) {
         guard let chunk = chunks[index] else {
             return
         }
@@ -190,7 +190,9 @@ final class ChunkMixer {
         }
 
         writeMasterRecording(buffer, format: format)
-        reportProgress(secondsRecorded: (index + 1) * chunkSeconds)
+        if reportingProgress {
+            reportProgress(secondsRecorded: (index + 1) * chunkSeconds)
+        }
     }
 
     private func reportProgress(secondsRecorded: Int) {
@@ -213,7 +215,11 @@ final class ChunkMixer {
             }
             try masterAudioFile?.write(from: buffer)
         } catch {
-            fputs("録音全体ファイルの書き出しに失敗しました: \(error.localizedDescription)\n", stderr)
+            fputs(
+                "録音ファイルへの書き出しに失敗しました（この区間の音声は失われます）: "
+                    + "\(error.localizedDescription)\n",
+                stderr
+            )
         }
     }
 
@@ -285,7 +291,9 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
     private let arguments: RecorderArguments
     private let mixer: ChunkMixer
     private let sampleQueue = DispatchQueue(label: "localMeetingNotes.audioSamples")
+    private let stopLock = NSLock()
     private var stream: SCStream?
+    private var isStopping = false
 
     init(arguments: RecorderArguments) {
         self.arguments = arguments
@@ -338,14 +346,40 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
         }
     }
 
-    func stop() async {
+    /// 停止処理を一度だけ実行させる。まだ停止していなければ true を返す。
+    ///
+    /// ターミナルのCtrl+Cはプロセスグループ全体へ届くため、アプリ側からの停止要求と
+    /// 重なって停止処理が二重に走る。二度目は「停止済みのストリームを止めた」という
+    /// 無害な失敗になるので、ここで弾く。
+    private func beginStop() -> Bool {
+        stopLock.lock()
+        defer { stopLock.unlock() }
+        if isStopping {
+            return false
+        }
+        isStopping = true
+        return true
+    }
+
+    /// 停止処理を実行した場合だけ true を返す。既に停止処理中なら false。
+    @discardableResult
+    func stop() async -> Bool {
+        guard beginStop() else {
+            return false
+        }
         do {
             try await stream?.stopCapture()
         } catch {
-            fputs("録音停止時にエラーが発生しました: \(error.localizedDescription)\n", stderr)
+            // 停止できなくても、ここまでの音声はファイルへ書き出し済み。
+            fputs(
+                "警告: 録音の停止処理に失敗しました（録音データは保存済みです）: "
+                    + "\(error.localizedDescription)\n",
+                stderr
+            )
         }
         mixer.finish()
         print("録音を停止しました。")
+        return true
     }
 
     func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of outputType: SCStreamOutputType) {
@@ -356,9 +390,16 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
     }
 
     func stream(_ stream: SCStream, didStopWithError error: Error) {
+        // 停止操作の後始末で呼ばれた場合は、通常の停止として扱う。
+        guard beginStop() else {
+            return
+        }
         // ストリームが死んだまま無音を録り続けないよう、ここで録音を終了する。
-        // 画面スリープ・画面ロック・外部ディスプレイの抜き差しで発生する。
-        fputs("録音が中断されました: \(error.localizedDescription)\n", stderr)
+        fputs(
+            "録音が中断されました（画面スリープ・画面ロック・ディスプレイの抜き差しで起こります）: "
+                + "\(error.localizedDescription)\n",
+            stderr
+        )
         mixer.finish()
         exit(streamStoppedExitCode)
     }
@@ -379,8 +420,11 @@ func run() async throws {
         let source = DispatchSource.makeSignalSource(signal: signalNumber, queue: .main)
         source.setEventHandler {
             Task {
-                await recorder.stop()
-                exit(0)
+                // 停止を実行した側だけが終了する。重複した停止要求で、
+                // 書き出しの途中にプロセスを終わらせないため。
+                if await recorder.stop() {
+                    exit(0)
+                }
             }
         }
         source.resume()
