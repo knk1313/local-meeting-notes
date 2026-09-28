@@ -246,7 +246,7 @@ final class ChunkMixer {
                 return nil
             }
             guard sourceFrameCount <= sourceBuffer.frameCapacity else {
-                fputs("入力音声バッファのフレーム数が容量を超えたため、このサンプルをスキップします。\\n", stderr)
+                fputs("警告: 入力音声バッファの容量を超えたため、このサンプルを取りこぼしました。\n", stderr)
                 return nil
             }
             sourceBuffer.frameLength = sourceFrameCount
