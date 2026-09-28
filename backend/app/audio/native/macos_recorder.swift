@@ -9,6 +9,9 @@ let masterRecordingFilename = "recording.wav"
 /// 画面スリープや外部ディスプレイの切断などでキャプチャが中断されたときの終了コード。
 let streamStoppedExitCode: Int32 = 3
 
+/// 片方の音声がこの秒数届かなければ、無音として扱い書き出しを進める。
+let staleSourceSeconds = 30.0
+
 enum RecorderError: LocalizedError {
     case invalidArguments(String)
     case unavailableMacOS
@@ -76,6 +79,8 @@ final class ChunkMixer {
     private var chunks: [Int: Chunk] = [:]
     private var latestSystemFrame = -1
     private var latestMicrophoneFrame = -1
+    private var warnedStaleSystem = false
+    private var warnedStaleMicrophone = false
 
     private struct Chunk {
         var system: [Float]
@@ -157,15 +162,52 @@ final class ChunkMixer {
     }
 
     private func flushCompletedChunks() {
-        guard latestSystemFrame >= 0, latestMicrophoneFrame >= 0 else {
+        let leading = max(latestSystemFrame, latestMicrophoneFrame)
+        guard leading >= 0 else {
             return
         }
 
-        let completeUntil = min(latestSystemFrame, latestMicrophoneFrame) / framesPerChunk - 1
+        // 片方の音声が途切れても書き出しを止めない。止めるとメモリに溜め込み続け、
+        // 異常終了したときに録音全体を失うため。
+        let staleFrames = Int(staleSourceSeconds * sampleRate)
+        let system = usableFrame(latestSystemFrame, leading: leading, staleFrames: staleFrames)
+        let microphone = usableFrame(latestMicrophoneFrame, leading: leading, staleFrames: staleFrames)
+        guard system >= 0, microphone >= 0 else {
+            return
+        }
+        if system != latestSystemFrame {
+            warnStaleSource(&warnedStaleSystem, missing: "システム音声", remaining: "マイク音声")
+        }
+        if microphone != latestMicrophoneFrame {
+            warnStaleSource(&warnedStaleMicrophone, missing: "マイク音声", remaining: "システム音声")
+        }
+
+        let completeUntil = min(system, microphone) / framesPerChunk - 1
         for index in chunks.keys.filter({ $0 <= completeUntil }).sorted() {
             writeChunk(index, reportingProgress: true)
             chunks[index] = nil
         }
+    }
+
+    /// 書き出しの判断に使えるフレーム位置を返す。届いていないソースは無音として扱う。
+    private func usableFrame(_ frame: Int, leading: Int, staleFrames: Int) -> Int {
+        if frame < 0 {
+            // 一度も届いていないソースは、しばらく待ってから無音とみなす。
+            return leading >= staleFrames ? leading : -1
+        }
+        return leading - frame <= staleFrames ? frame : leading
+    }
+
+    private func warnStaleSource(_ warned: inout Bool, missing: String, remaining: String) {
+        guard !warned else {
+            return
+        }
+        warned = true
+        fputs(
+            "警告: \(missing)が\(Int(staleSourceSeconds))秒以上届いていません。"
+                + "\(remaining)のみで録音を続けます。\n",
+            stderr
+        )
     }
 
     private func writeChunk(_ index: Int, reportingProgress: Bool) {
