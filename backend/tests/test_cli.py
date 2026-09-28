@@ -22,6 +22,7 @@ from app.cli import (
     run_record,
 )
 from app.audio import AudioRecorder
+from app.audio.split import AudioPart
 from app.llm import LlmError, MeetingAnalysis, Task
 from app.settings import settings
 from app.stt import Segment, SttError, SttProvider
@@ -267,6 +268,34 @@ class CliTest(unittest.TestCase):
 
             transcript = (recording_dir / TRANSCRIPT_FILENAME).read_text(encoding="utf-8")
             self.assertEqual(transcript.splitlines(), ["[A] 0.00s–1.00s: recording"])
+
+    def test_run_record_offsets_timestamps_of_later_parts(self) -> None:
+        """分割して文字起こしした場合も、時刻は録音全体の位置に揃える。"""
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_path = Path(temporary_directory)
+            recording_dir = temporary_path / "recording"
+            args = argparse.Namespace(title="分割テスト", participants=[], tags=[], keep_transcript=False)
+
+            def split(path: Path, **_keywords: object) -> list[AudioPart]:
+                return [AudioPart(path=path, start_seconds=0.0), AudioPart(path=path, start_seconds=600.0)]
+
+            with (
+                patch("app.cli._resolve_recording_output_dir", return_value=recording_dir),
+                patch("app.cli.split_for_transcription", side_effect=split),
+            ):
+                run_record(
+                    args,
+                    recorder=FakeMeetingRecorder(),
+                    stt_provider=RecordingSttProvider(),
+                    analyzer=FakeAnalyzer(),
+                    notes_dir=temporary_path / "notes",
+                )
+
+            transcript = (recording_dir / TRANSCRIPT_FILENAME).read_text(encoding="utf-8")
+            self.assertEqual(
+                transcript.splitlines(),
+                ["[A] 0.00s–1.00s: recording", "[A] 600.00s–601.00s: recording"],
+            )
 
     def test_run_record_writes_note_when_recording_is_interrupted(self) -> None:
         """録音が途中で切れても、取得できた音声から会議ノートを作る。"""

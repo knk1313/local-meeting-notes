@@ -58,7 +58,7 @@ flowchart LR
 - 話者分離（diarization）に対応
   - 第一候補: OpenAI `gpt-4o-transcribe-diarize`
   - 代替: Google Speech-to-Text の `speaker_diarization_config`
-- OpenAI STTの上限に合わせ、25MBを超える録音はAAC(m4a)へ圧縮してから渡す
+- OpenAI STTの上限に合わせ、25MBを超える録音はAAC(m4a)へ圧縮し、1400秒を超える録音は無音位置で分割してから渡す
 - 30秒を超える音声は`chunking_strategy="auto"`を指定し、発話区間の検出はAPI側に任せる
 
 ### 3. タスク分解（LLM）
@@ -141,6 +141,9 @@ python -m app record --title "定例MTG" --participant "田中" --tag project-a 
 `Ctrl+C`で録音を停止すると、その1ファイルを文字起こしし、全文から要約・タスクを抽出してMarkdown会議ノートを自動保存する。
 
 25MBを超える録音は、OpenAI STTへ渡す前にmacOS標準の`afconvert`でモノラルAAC(m4a)へ圧縮する（32kbpsで約100分ぶんが25MBに収まる）。
+`gpt-4o-transcribe-diarize`は1回あたり1400秒（23分20秒）までしか受け付けないため、これを超える録音は20分を目安に分割して順に渡す。
+区切りは目安の位置ではなく、その前後15秒で最も静かなところに置き、発話の途中で切らないようにする。
+分割した場合、話者ラベル（話者A・話者B）は断片ごとに振り直されるため、前後で同じ人物を指すとは限らない。
 `.env`の`RECORDING_CHUNK_SECONDS`は、録音ファイルへ書き出す単位（既定: 15秒）で、文字起こしの分割には影響しない。
 録音先・ノート出力先はそれぞれ`data/`・`NOTES_DIR`に固定する。
 
