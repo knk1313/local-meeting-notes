@@ -447,6 +447,26 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
     }
 }
 
+/// 停止シグナルの対象。準備が整う前にシグナルが届くため、あとから差し込む。
+final class ActiveRecorder {
+    private let lock = NSLock()
+    private var recorder: Recorder?
+
+    func set(_ recorder: Recorder) {
+        lock.lock()
+        defer { lock.unlock() }
+        self.recorder = recorder
+    }
+
+    func current() -> Recorder? {
+        lock.lock()
+        defer { lock.unlock() }
+        return recorder
+    }
+}
+
+let activeRecorder = ActiveRecorder()
+
 func run() async throws {
     guard #available(macOS 15.0, *) else {
         throw RecorderError.unavailableMacOS
@@ -455,29 +475,35 @@ func run() async throws {
     let arguments = try RecorderArguments(arguments: Array(CommandLine.arguments.dropFirst()))
     try FileManager.default.createDirectory(at: arguments.outputDirectory, withIntermediateDirectories: true)
     let recorder = Recorder(arguments: arguments)
-
-    signal(SIGINT, SIG_IGN)
-    signal(SIGTERM, SIG_IGN)
-    let stopSignals = [SIGINT, SIGTERM].map { signalNumber -> DispatchSourceSignal in
-        let source = DispatchSource.makeSignalSource(signal: signalNumber, queue: .main)
-        source.setEventHandler {
-            Task {
-                // 停止を実行した側だけが終了する。重複した停止要求で、
-                // 書き出しの途中にプロセスを終わらせないため。
-                if await recorder.stop() {
-                    exit(0)
-                }
-            }
-        }
-        source.resume()
-        return source
-    }
+    activeRecorder.set(recorder)
 
     try await recorder.start()
-    _ = stopSignals
     await withUnsafeContinuation { (continuation: UnsafeContinuation<Void, Never>) in
         _ = continuation
     }
+}
+
+// シグナルの扱いは、起動直後に同期で決める。準備をTask内で行うと、
+// それより前に届いた停止シグナルが既定動作でプロセスを終わらせてしまう。
+signal(SIGINT, SIG_IGN)
+signal(SIGTERM, SIG_IGN)
+let stopSignals = [SIGINT, SIGTERM].map { signalNumber -> DispatchSourceSignal in
+    let source = DispatchSource.makeSignalSource(signal: signalNumber, queue: .main)
+    source.setEventHandler {
+        Task {
+            guard let recorder = activeRecorder.current() else {
+                // まだ録音が始まっていない。書き出すものが無いので、そのまま終わる。
+                exit(0)
+            }
+            // 停止を実行した側だけが終了する。重複した停止要求で、
+            // 書き出しの途中にプロセスを終わらせないため。
+            if await recorder.stop() {
+                exit(0)
+            }
+        }
+    }
+    source.resume()
+    return source
 }
 
 Task {
@@ -489,4 +515,5 @@ Task {
     }
 }
 
+_ = stopSignals
 dispatchMain()
