@@ -14,6 +14,7 @@ from app.settings import settings
 
 TEMPLATE_PATH = Path(__file__).resolve().parent / "templates" / "meeting_note.md"
 INVALID_FILENAME_CHARACTERS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+PLACEHOLDER_PATTERN = re.compile(r"\{\{(\w+)\}\}")
 
 
 @dataclass(frozen=True)
@@ -51,13 +52,15 @@ def render_meeting_note(
         "transcript": transcript.strip(),
     }
 
-    for name, value in values.items():
-        placeholder = f"{{{{{name}}}}}"
-        if placeholder not in template:
-            raise ValueError(f"出力テンプレートに {placeholder} がありません: {template_path}")
-        template = template.replace(placeholder, value)
+    for name in values:
+        if f"{{{{{name}}}}}" not in template:
+            raise ValueError(f"出力テンプレートに {{{{{name}}}}} がありません: {template_path}")
 
-    return template.rstrip() + "\n"
+    # 一度の走査で差し込み、差し込んだ文字列を次の置換の対象にしない。
+    # 順に置換すると、要約や会議名に {{transcript}} のような文字列が含まれる場合に、
+    # そこへ文字起こし全文が展開されてしまう。
+    filled = PLACEHOLDER_PATTERN.sub(lambda match: values.get(match.group(1), match.group(0)), template)
+    return filled.rstrip() + "\n"
 
 
 def write_meeting_note(
