@@ -22,6 +22,10 @@ from app.stt import Segment, SttError, SttProvider
 from app.stt.openai import MAX_FILE_SIZE_BYTES, OpenAiSttProvider
 
 
+#: 処理の段階。API層がそのまま会議の状態として扱う。
+STAGE_TRANSCRIBING = "transcribing"
+STAGE_SUMMARIZING = "summarizing"
+
 #: 録音ヘルパーが書き出す、会議全体の音声ファイル名。
 RECORDING_FILENAME = "recording.wav"
 
@@ -142,6 +146,8 @@ def run_record(
     on_status: Callable[[str], None] | None = None,
     on_segments: Callable[[list[Segment]], None] | None = None,
     on_warning: Callable[[str], None] | None = None,
+    on_stage: Callable[[str], None] | None = None,
+    on_note: Callable[[Path], None] | None = None,
 ) -> int:
     """録音を1ファイルとして取り、停止後にまとめて文字起こしして会議ノートを保存する。"""
     _ensure_providers_configured(stt_provider, analyzer)
@@ -158,6 +164,10 @@ def run_record(
         print(message)
         if on_warning is not None:
             on_warning(message)
+
+    def report_stage(stage: str) -> None:
+        if on_stage is not None:
+            on_stage(stage)
 
     report_status(f"録音セッションの出力先: {output_dir}")
     report_status("録音中... 停止すると文字起こしと会議ノートを生成します。")
@@ -176,19 +186,25 @@ def run_record(
         report_status("発話を検出できませんでした。会議ノートは作成せず、録音データは破棄しました。")
         return EXIT_NO_SPEECH
 
+    report_stage(STAGE_TRANSCRIBING)
     report_status("文字起こし中...")
     provider = stt_provider if stt_provider is not None else OpenAiSttProvider()
+    transcript_path = output_dir / TRANSCRIPT_FILENAME
+
+    def keep_segments(segments: list[Segment]) -> None:
+        # 途中で失敗しても取得済みを失わないよう、断片ごとに書き足す。
+        _append_transcript(transcript_path, segments)
+        if on_segments is not None and segments:
+            on_segments(segments)
+
     try:
-        segments = _transcribe_audio(recording_path, provider, report_status=report_status)
-    except SttError as exc:
-        # 録音は残すので、同じ音声から何度でもやり直せる。
-        report_status(
-            f"文字起こしに失敗しました: {exc}\n"
-            f"録音は残してあります。`python -m app.cli {recording_path}` で再実行できます。"
+        segments = _transcribe_audio(
+            recording_path, provider, report_status=report_status, on_part=keep_segments
         )
+    except SttError as exc:
+        # 録音も、途中までの文字起こしも残す。どちらからでもやり直せる。
+        report_status(_transcription_failure_message(exc, recording_path, transcript_path))
         return EXIT_FAILED
-    if on_segments is not None and segments:
-        on_segments(segments)
 
     transcript = format_transcript(segments)
     if not transcript:
@@ -196,17 +212,17 @@ def run_record(
         report_status("発話を検出できませんでした。会議ノートは作成せず、録音データは破棄しました。")
         return EXIT_NO_SPEECH
 
-    # 要約が失敗しても作り直せるよう、文字起こしを録音ディレクトリへ残す。
-    _write_transcript(output_dir / TRANSCRIPT_FILENAME, transcript)
-    report_status(f"文字起こしを保存しました: {output_dir / TRANSCRIPT_FILENAME}")
-
-    _write_analysis_result(
+    report_status(f"文字起こしを保存しました: {transcript_path}")
+    report_stage(STAGE_SUMMARIZING)
+    output_path = _write_analysis_result(
         args,
         transcript,
         notes_dir=notes_dir or settings.notes_dir,
         analyzer=analyzer,
         report_status=report_status,
     )
+    if on_note is not None:
+        on_note(output_path)
     return EXIT_SUCCESS
 
 
@@ -215,8 +231,12 @@ def _transcribe_audio(
     provider: SttProvider,
     *,
     report_status: Callable[[str], None],
+    on_part: Callable[[list[Segment]], None] | None = None,
 ) -> list[Segment]:
-    """音声全体を文字起こしする。API の上限を超える場合だけ分割して順に渡す。"""
+    """音声全体を文字起こしする。API の上限を超える場合だけ分割して順に渡す。
+
+    ``on_part`` は断片ごとに、録音全体の時刻へ補正した結果で呼ぶ。
+    """
     with tempfile.TemporaryDirectory(prefix="local-meeting-notes-") as work_dir:
         parts = split_for_transcription(path, parts_dir=Path(work_dir), on_status=report_status)
         segments: list[Segment] = []
@@ -226,7 +246,10 @@ def _transcribe_audio(
             audio_path = compress_for_transcription(
                 part.path, max_bytes=MAX_FILE_SIZE_BYTES, work_dir=Path(work_dir), on_status=report_status
             )
-            segments.extend(_shift_segments(provider.transcribe(audio_path), part.start_seconds))
+            part_segments = _shift_segments(provider.transcribe(audio_path), part.start_seconds)
+            if on_part is not None:
+                on_part(part_segments)
+            segments.extend(part_segments)
         return segments
 
 
@@ -258,13 +281,29 @@ def _ensure_providers_configured(
         create_default_analyzer()
 
 
-def _write_transcript(path: Path, transcript: str) -> None:
-    """文字起こし全文をファイルへ書き出す。失敗しても後続の処理は続ける。"""
+def _append_transcript(path: Path, segments: list[Segment]) -> None:
+    """確定した文字起こしをファイルへ書き足す。失敗しても後続の処理は続ける。"""
+    lines = format_transcript(segments)
+    if not lines:
+        return
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(f"{transcript}\n", encoding="utf-8")
+        with path.open("a", encoding="utf-8") as transcript_file:
+            transcript_file.write(f"{lines}\n")
     except OSError:
         return
+
+
+def _transcription_failure_message(error: SttError, recording_path: Path, transcript_path: Path) -> str:
+    """文字起こしの失敗理由と、やり直す手立てをまとめて伝える。"""
+    lines = [f"文字起こしに失敗しました: {error}"]
+    if transcript_path.is_file():
+        lines.append(
+            f"途中までの文字起こしを保存しました: {transcript_path}\n"
+            f"`python -m app note {transcript_path}` で、そこまでの会議ノートを作れます。"
+        )
+    lines.append(f"録音も残してあります。`python -m app.cli {recording_path}` で最初からやり直せます。")
+    return "\n".join(lines)
 
 
 def _discard_recording(output_dir: Path, report_status: Callable[[str], None]) -> None:

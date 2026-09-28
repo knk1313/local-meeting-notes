@@ -143,6 +143,20 @@ class SilentSttProvider(SttProvider):
         return []
 
 
+class SecondPartFailingSttProvider(SttProvider):
+    """2本目の断片で失敗するテスト用STTプロバイダ。"""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def transcribe(self, path: Path) -> list[Segment]:
+        """1本目だけ成功し、以降は失敗する。"""
+        self.calls += 1
+        if self.calls > 1:
+            raise SttError("OpenAIのクレジット残高が不足しています。")
+        return [Segment(speaker="A", start=0.0, end=1.0, text="前半")]
+
+
 class FailingSttProvider(SttProvider):
     """STT呼び出しが失敗する場合を再現するテスト用STTプロバイダ。"""
 
@@ -296,6 +310,37 @@ class CliTest(unittest.TestCase):
                 transcript.splitlines(),
                 ["[A] 0.00s–1.00s: recording", "[A] 600.00s–601.00s: recording"],
             )
+
+    def test_run_record_keeps_transcript_of_finished_parts_on_failure(self) -> None:
+        """分割の途中で失敗しても、成功した断片の文字起こしは残して案内する。"""
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_path = Path(temporary_directory)
+            recording_dir = temporary_path / "recording"
+            statuses: list[str] = []
+            args = argparse.Namespace(title="途中失敗テスト", participants=[], tags=[], keep_transcript=False)
+
+            def split(path: Path, **_keywords: object) -> list[AudioPart]:
+                return [AudioPart(path=path, start_seconds=0.0), AudioPart(path=path, start_seconds=600.0)]
+
+            with (
+                patch("app.cli._resolve_recording_output_dir", return_value=recording_dir),
+                patch("app.cli.split_for_transcription", side_effect=split),
+            ):
+                exit_code = run_record(
+                    args,
+                    recorder=FakeMeetingRecorder(),
+                    stt_provider=SecondPartFailingSttProvider(),
+                    analyzer=FakeAnalyzer(),
+                    notes_dir=temporary_path / "notes",
+                    on_status=statuses.append,
+                )
+
+            self.assertEqual(exit_code, EXIT_FAILED)
+            transcript_path = recording_dir / TRANSCRIPT_FILENAME
+            self.assertEqual(transcript_path.read_text(encoding="utf-8").splitlines(), ["[A] 0.00s–1.00s: 前半"])
+            self.assertIn("クレジット残高が不足しています", statuses[-1])
+            self.assertIn(f"python -m app note {transcript_path}", statuses[-1])
+            self.assertTrue((recording_dir / RECORDING_FILENAME).is_file())
 
     def test_run_record_writes_note_when_recording_is_interrupted(self) -> None:
         """録音が途中で切れても、取得できた音声から会議ノートを作る。"""

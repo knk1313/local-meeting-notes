@@ -10,7 +10,6 @@ from typing import Literal
 from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from app.audio import MacOsAudioRecorder
@@ -73,7 +72,7 @@ class MeetingResponse(BaseModel):
 
 @dataclass
 class MeetingSession:
-    """録音プロセスと逐次STT結果をまとめて管理する。"""
+    """録音プロセスと、停止後の文字起こし・要約の進行状況をまとめて管理する。"""
 
     id: str
     title: str
@@ -138,6 +137,8 @@ class MeetingSession:
                 on_status=self._set_status,
                 on_segments=self._append_segments,
                 on_warning=self._set_warning,
+                on_stage=self._set_stage,
+                on_note=self._set_note_path,
             )
         except Exception as exc:  # UIへ失敗理由を返し、サーバープロセスは継続する。
             with self._lock:
@@ -162,21 +163,23 @@ class MeetingSession:
     def _append_segments(self, segments: list[Segment]) -> None:
         with self._lock:
             self.transcript.extend(segments)
-            self.phase = "transcribing"
 
     def _set_warning(self, message: str) -> None:
         with self._lock:
             self.warning = message
 
+    def _set_stage(self, stage: str) -> None:
+        with self._lock:
+            if stage in {"transcribing", "summarizing"}:
+                self.phase = stage
+
+    def _set_note_path(self, path: Path) -> None:
+        with self._lock:
+            self.note_path = str(path)
+
     def _set_status(self, message: str) -> None:
         with self._lock:
             self.message = message
-            if message.startswith("要約・タスク") or message.startswith("Markdownを書き出し"):
-                self.phase = "summarizing"
-            elif message.startswith("文字起こし"):
-                self.phase = "transcribing"
-            elif message.startswith("会議ノートを保存しました:"):
-                self.note_path = message.removeprefix("会議ノートを保存しました:").strip()
 
 
 class MeetingService:
@@ -215,12 +218,6 @@ class MeetingService:
 service = MeetingService()
 
 app = FastAPI(title="Local Meeting Notes API", version="0.1.0")
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
 
 @app.get("/api/health")
