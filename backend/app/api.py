@@ -93,9 +93,13 @@ class MeetingSession:
         self._thread.start()
 
     def request_stop(self) -> None:
-        """録音停止を要求する。要約とMarkdown生成はバックグラウンドで続ける。"""
+        """録音停止を要求する。文字起こしと要約はバックグラウンドで続ける。
+
+        停止できるのは録音中だけ。文字起こし以降は録音ヘルパーが終了済みで、
+        停止要求は空振りするうえ、数分間「停止しています」の表示が残ってしまう。
+        """
         with self._lock:
-            if self.phase not in {"recording", "transcribing"}:
+            if self.phase != "recording":
                 return
             self.message = "録音を停止しています…"
         self.recorder.request_stop()

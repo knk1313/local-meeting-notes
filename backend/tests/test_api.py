@@ -68,6 +68,18 @@ class ApiTest(unittest.TestCase):
         self.assertEqual(session.snapshot().warning, " 欠落があります。")
         self.assertEqual(session.snapshot().phase, "completed")
 
+    def test_keeps_the_status_when_stopping_after_recording_finished(self) -> None:
+        """文字起こしに入ったあとの停止要求では、表示を書き換えない。"""
+        session = api.MeetingSession(id="test", title="定例MTG", participants=[])
+        session.phase = "transcribing"
+        session.message = "文字起こしAPIへ送信中..."
+
+        with patch.object(session.recorder, "request_stop") as request_stop:
+            session.request_stop()
+
+        self.assertEqual(session.snapshot().message, "文字起こしAPIへ送信中...")
+        request_stop.assert_not_called()
+
     def test_tracks_progress_from_callbacks(self) -> None:
         """会議の段階と保存先は、メッセージ文言ではなく通知から決める。"""
         session = api.MeetingSession(id="test", title="定例MTG", participants=[])
