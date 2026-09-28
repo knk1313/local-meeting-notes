@@ -122,6 +122,9 @@ def _read_chunks(audio: BinaryIO, file_size: int) -> WavInfo | None:
             if len(body) < 16:
                 return None
             format_tag, channels, sample_rate, _, _, bits = struct.unpack_from("<HHIIHH", body, 0)
+            if channels <= 0 or sample_rate <= 0 or bits <= 0:
+                # 0除算で落ちるより、読めない音声として扱う方が扱いやすい。
+                return None
             sample_format = (format_tag, channels, sample_rate, bits)
         elif identifier == b"data":
             if sample_format is None:

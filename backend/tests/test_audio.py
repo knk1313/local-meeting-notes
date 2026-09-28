@@ -5,12 +5,33 @@ from __future__ import annotations
 import os
 import stat
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from threading import Thread
+
 from app.audio import AudioCaptureError
 from app.audio.macos import MacOsAudioRecorder, _validate_chunk_seconds
+
+
+STUBBORN_HELPER = """#!/bin/sh
+# 1回目の停止シグナルは受け取り損ね、2回目で終了する録音ヘルパー。
+count=0
+handle() {
+    count=$((count + 1))
+    echo "$count" > "$RECEIVED"
+    if [ "$count" -ge 2 ]; then
+        exit 0
+    fi
+}
+trap handle INT
+echo ready > "$READY"
+while true; do
+    sleep 0.05
+done
+"""
 
 
 class MacOsAudioRecorderTest(unittest.TestCase):
@@ -87,6 +108,52 @@ class RecorderFailureTest(unittest.TestCase):
 
             self.assertEqual(exit_code, 0)
             self.assertIsNone(recorder.last_error)
+
+
+class RecorderStopTest(unittest.TestCase):
+    """停止シグナルが取りこぼされても録音が止まることを確認する。"""
+
+    def test_resends_the_stop_signal_until_the_helper_exits(self) -> None:
+        """1回目のシグナルが効かなくても、送り直して停止させる。"""
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_path = Path(temporary_directory)
+            received = temporary_path / "received"
+            ready = temporary_path / "ready"
+            helper = temporary_path / "stubborn-recorder"
+            helper.write_text(STUBBORN_HELPER, encoding="utf-8")
+            helper.chmod(helper.stat().st_mode | stat.S_IXUSR)
+            os.environ["RECEIVED"] = str(received)
+            os.environ["READY"] = str(ready)
+            self.addCleanup(os.environ.pop, "RECEIVED", None)
+            self.addCleanup(os.environ.pop, "READY", None)
+
+            recorder = MacOsAudioRecorder()
+            exit_codes: list[int] = []
+
+            with (
+                patch.object(MacOsAudioRecorder, "_build_binary", return_value=helper),
+                patch("app.audio.macos.STOP_RETRY_SECONDS", 0.1),
+            ):
+                worker = Thread(target=lambda: exit_codes.append(recorder.record(temporary_path / "out", 15)))
+                worker.start()
+                # シグナルを受け取れる状態になるまで待つ。
+                _wait_until(ready.exists)
+                recorder.request_stop()
+                worker.join(timeout=5)
+
+            self.assertFalse(worker.is_alive())
+            self.assertEqual(exit_codes, [0])
+            self.assertGreaterEqual(int(received.read_text(encoding="utf-8").strip()), 2)
+
+
+def _wait_until(condition, timeout: float = 5.0) -> None:
+    """条件が満たされるまで待つ。"""
+    limit = time.time() + timeout
+    while time.time() < limit:
+        if condition():
+            return
+        time.sleep(0.02)
+    raise AssertionError("録音ヘルパーが停止シグナルを受け取れる状態になりませんでした。")
 
 
 if __name__ == "__main__":

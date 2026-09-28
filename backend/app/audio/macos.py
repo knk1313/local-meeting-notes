@@ -6,6 +6,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import time
 from collections import deque
 from threading import Lock, Thread
 from pathlib import Path
@@ -25,6 +26,10 @@ RETAINED_ERROR_LINES = 5
 
 # 録音は続いている旨の注意書きにつく接頭辞。失敗理由としては扱わない。
 WARNING_PREFIX = "警告:"
+
+# 停止シグナルを送り直す間隔（秒）と回数。起動直後は取りこぼされることがある。
+STOP_RETRY_SECONDS = 1.0
+STOP_RETRY_LIMIT = 5
 
 
 class MacOsAudioRecorder(AudioRecorder):
@@ -102,8 +107,27 @@ class MacOsAudioRecorder(AudioRecorder):
         with self._process_lock:
             self._stop_requested = True
             process = self._process
-        if process is not None and process.poll() is None:
+        if process is None or process.poll() is not None:
+            return
+
+        self._send_stop(process)
+        # 起動直後はシグナルを受け取れないことがあるため、終了するまで送り直す。
+        Thread(target=self._resend_stop, args=(process,), name="recorder-stop", daemon=True).start()
+
+    def _resend_stop(self, process: subprocess.Popen[bytes]) -> None:
+        """停止シグナルが効くまで、間隔をあけて送り直す。"""
+        for _ in range(STOP_RETRY_LIMIT):
+            time.sleep(STOP_RETRY_SECONDS)
+            if process.poll() is not None:
+                return
+            self._send_stop(process)
+
+    def _send_stop(self, process: subprocess.Popen[bytes]) -> None:
+        """停止シグナルを送る。すでに終了していれば何もしない。"""
+        try:
             process.send_signal(signal.SIGINT)
+        except (OSError, ValueError):
+            return
 
     def _clear_process(self, process: subprocess.Popen[bytes]) -> None:
         with self._process_lock:

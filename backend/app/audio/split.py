@@ -12,7 +12,14 @@ from app.audio.wav import WavInfo, read_info, read_samples, write_slice
 
 
 #: gpt-4o-transcribe-diarize が1回で受け付ける音声の長さ（秒）。
-MAX_TRANSCRIPTION_SECONDS = 1400
+API_MAX_SECONDS = 1400
+
+#: AAC化すると先頭に1フレーム（約0.03秒）の余白が付き、API側は元の音声より長く数える。
+#: 上限ぎりぎりの音声が弾かれないよう、判定にはこの余裕を引いた長さを使う。
+TRANSCRIPTION_MARGIN_SECONDS = 20
+
+#: 分割するかどうかの判断と、1本あたりの上限に使う長さ（秒）。
+MAX_TRANSCRIPTION_SECONDS = API_MAX_SECONDS - TRANSCRIPTION_MARGIN_SECONDS
 
 #: 分割するときの1本あたりの目安。区切り位置を探す余地と符号化の誤差ぶんを残す。
 SPLIT_TARGET_SECONDS = 1200
@@ -127,7 +134,9 @@ def _quietest_cut(audio: BinaryIO, info: WavInfo, low: int, high: int) -> int:
         if quietest_energy is None or energy < quietest_energy:
             quietest_energy = energy
             quietest = low + (index + samples_per_window // 2) * bytes_per_sample
-    return min(max(quietest, low), high)
+    # 位置はサンプル単位で求めているため、最後にフレーム境界へ揃える。
+    # 途中で切るとチャンネルの並びがずれ、以降の音声が入れ替わる。
+    return _align(min(max(quietest, low), high), info.bytes_per_frame)
 
 
 def _align(position: int, bytes_per_frame: int) -> int:

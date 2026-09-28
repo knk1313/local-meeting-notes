@@ -12,11 +12,14 @@ SAMPLE_RATE = 48_000
 _PCM_FLOAT_FORMAT = 3
 
 
-def write_float_wav(path: Path, samples: list[float]) -> None:
-    """録音ヘルパーと同じ float32 モノラル WAV を書き出す。"""
+def write_float_wav(path: Path, samples: list[float], channels: int = 1) -> None:
+    """録音ヘルパーと同じ float32 WAV を書き出す。既定はモノラル。"""
     data = array.array("f", samples).tobytes()
+    block_align = 4 * channels
     header = b"RIFF" + struct.pack("<I", 36 + len(data)) + b"WAVE"
-    header += b"fmt " + struct.pack("<IHHIIHH", 16, _PCM_FLOAT_FORMAT, 1, SAMPLE_RATE, SAMPLE_RATE * 4, 4, 32)
+    header += b"fmt " + struct.pack(
+        "<IHHIIHH", 16, _PCM_FLOAT_FORMAT, channels, SAMPLE_RATE, SAMPLE_RATE * block_align, block_align, 32
+    )
     header += b"data" + struct.pack("<I", len(data))
     path.write_bytes(header + data)
 

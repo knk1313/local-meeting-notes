@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
@@ -66,6 +67,36 @@ class ApiTest(unittest.TestCase):
 
         self.assertEqual(session.snapshot().warning, " 欠落があります。")
         self.assertEqual(session.snapshot().phase, "completed")
+
+    def test_keeps_the_status_when_stopping_after_recording_finished(self) -> None:
+        """文字起こしに入ったあとの停止要求では、表示を書き換えない。"""
+        session = api.MeetingSession(id="test", title="定例MTG", participants=[])
+        session.phase = "transcribing"
+        session.message = "文字起こしAPIへ送信中..."
+
+        with patch.object(session.recorder, "request_stop") as request_stop:
+            session.request_stop()
+
+        self.assertEqual(session.snapshot().message, "文字起こしAPIへ送信中...")
+        request_stop.assert_not_called()
+
+    def test_tracks_progress_from_callbacks(self) -> None:
+        """会議の段階と保存先は、メッセージ文言ではなく通知から決める。"""
+        session = api.MeetingSession(id="test", title="定例MTG", participants=[])
+
+        def run_with_progress(*_args: object, **keywords: object) -> int:
+            keywords["on_stage"]("transcribing")  # type: ignore[operator]
+            self.assertEqual(session.snapshot().phase, "transcribing")
+            keywords["on_stage"]("summarizing")  # type: ignore[operator]
+            keywords["on_note"](Path("/tmp/2026-09-28-定例MTG.md"))  # type: ignore[operator]
+            return api.EXIT_SUCCESS
+
+        with patch("app.api.run_record", side_effect=run_with_progress):
+            session._run()
+
+        snapshot = session.snapshot()
+        self.assertEqual(snapshot.phase, "completed")
+        self.assertEqual(snapshot.note_path, "/tmp/2026-09-28-定例MTG.md")
 
 
 if __name__ == "__main__":

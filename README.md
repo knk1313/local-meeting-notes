@@ -33,8 +33,8 @@ flowchart LR
     B["Macのシステム音声<br/>(Zoom / Meet / Teams等)"] --> C
     C --> D["録音全体を1ファイルへ<br/>(recording.wav)"]
     D --> E["STTプロバイダ抽象化層<br/>(OpenAI)"]
-    E --> F["文字起こし結果<br/>(話者ラベル付き・逐次追加)"]
-    F --> G["ローカル画面 / CLIへ進捗表示"]
+    E --> F["文字起こし結果<br/>(話者ラベル付き)"]
+    F --> G[CLIへ進捗表示]
     F --> I["会議終了後にClaude APIへ送信"]
     I --> J[要約 + タスク抽出]
     J --> K["Markdown生成<br/>(1会議1ファイル)"]
@@ -42,7 +42,9 @@ flowchart LR
 ```
 
 録音中は分割せず、会議全体を1本の音声ファイルとして保存する。録音を停止したあと、その1ファイルをまとめてSTTへ渡す。
-文章の途中で切れないため文字起こしの精度が落ちにくく、話者分離のラベルも会議全体で一貫する。
+文章の途中で切れないため、文字起こしの精度が落ちにくい。
+ただしSTTモデルの上限（1回あたり1400秒）を超える録音は、無音位置で分割して順に渡すため、
+話者ラベルは断片ごとに振り直される。
 続けて文字起こし全文をClaude APIへ渡し、要約・タスク抽出とMarkdown出力を行う。
 
 ## 主要機能要件
@@ -137,11 +139,13 @@ source .venv/bin/activate
 python -m app record --title "定例MTG" --participant "田中" --tag project-a --keep-transcript
 ```
 
-既定ではリポジトリ直下の`data/recordings_YYYYMMDDHHMM/`へ保存する。録音全体は`recording.wav`の1ファイルにまとまる。
+既定ではリポジトリ直下の`data/recordings_YYYYMMDDHHMMSS/`へ保存する。録音全体は`recording.wav`の1ファイルにまとまる。
 `Ctrl+C`で録音を停止すると、その1ファイルを文字起こしし、全文から要約・タスクを抽出してMarkdown会議ノートを自動保存する。
 
 25MBを超える録音は、OpenAI STTへ渡す前にmacOS標準の`afconvert`でモノラルAAC(m4a)へ圧縮する（32kbpsで約100分ぶんが25MBに収まる）。
-`gpt-4o-transcribe-diarize`は1回あたり1400秒（23分20秒）までしか受け付けないため、これを超える録音は20分を目安に分割して順に渡す。
+`gpt-4o-transcribe-diarize`は1回あたり1400秒（23分20秒）までしか受け付けない。
+AAC化すると先頭に1フレーム（約0.03秒）の余白が付き、API側は元の音声より長く数えるため、
+余裕を引いた1380秒を超える録音を、20分を目安に分割して順に渡す。
 区切りは目安の位置ではなく、その前後15秒で最も静かなところに置き、発話の途中で切らないようにする。
 分割した場合、話者ラベル（話者A・話者B）は断片ごとに振り直されるため、前後で同じ人物を指すとは限らない。
 `.env`の`RECORDING_CHUNK_SECONDS`は、録音ファイルへ書き出す単位（既定: 15秒）で、文字起こしの分割には影響しない。
@@ -157,19 +161,20 @@ python -m app record --title "定例MTG" --participant "田中" --tag project-a 
 
 ## 途中で落ちた録音から会議ノートを作り直す
 
-文字起こしが終わると、要約より先に録音ディレクトリの`transcript.txt`へ全文が保存される。
-要約の生成に失敗した場合や処理を中断した場合は、このファイルから会議ノートを作り直せる（STTの再実行は不要）。
+文字起こしは、確定した断片から順に録音ディレクトリの`transcript.txt`へ書き足される。
+要約の生成に失敗した場合はもちろん、分割した音声の途中で文字起こしが失敗した場合も、
+そこまでの内容がこのファイルに残るため、会議ノートを作り直せる（STTの再実行は不要）。
 
 ```sh
 cd backend
 source .venv/bin/activate
-python -m app note ../data/recordings_YYYYMMDDHHMM/transcript.txt --title "定例MTG" --participant "田中"
+python -m app note ../data/recordings_YYYYMMDDHHMMSS/transcript.txt --title "定例MTG" --participant "田中"
 ```
 
 文字起こしからやり直す場合は、残っている録音ファイルをそのまま渡す。
 
 ```sh
-python -m app.cli ../data/recordings_YYYYMMDDHHMM/recording.wav --title "定例MTG"
+python -m app.cli ../data/recordings_YYYYMMDDHHMMSS/recording.wav --title "定例MTG"
 ```
 
 ## ローカルAPIを起動する
@@ -187,7 +192,7 @@ python -m app.api
 
 | メソッド | パス | 用途 |
 |---|---|---|
-| POST | `/api/meetings` | 録音と逐次文字起こしを開始する |
+| POST | `/api/meetings` | 録音を開始する |
 | GET | `/api/meetings/{id}` | 会議の状態・文字起こしを取得する |
 | POST | `/api/meetings/current/stop` | 録音を停止し、要約とMarkdown生成へ進める |
 | GET | `/api/notes` | 保存済み会議ノートの一覧を返す |

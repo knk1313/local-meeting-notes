@@ -9,6 +9,9 @@ let masterRecordingFilename = "recording.wav"
 /// 画面スリープや外部ディスプレイの切断などでキャプチャが中断されたときの終了コード。
 let streamStoppedExitCode: Int32 = 3
 
+/// 片方の音声がこの秒数届かなければ、無音として扱い書き出しを進める。
+let staleSourceSeconds = 30.0
+
 enum RecorderError: LocalizedError {
     case invalidArguments(String)
     case unavailableMacOS
@@ -76,6 +79,8 @@ final class ChunkMixer {
     private var chunks: [Int: Chunk] = [:]
     private var latestSystemFrame = -1
     private var latestMicrophoneFrame = -1
+    private var warnedStaleSystem = false
+    private var warnedStaleMicrophone = false
 
     private struct Chunk {
         var system: [Float]
@@ -157,15 +162,52 @@ final class ChunkMixer {
     }
 
     private func flushCompletedChunks() {
-        guard latestSystemFrame >= 0, latestMicrophoneFrame >= 0 else {
+        let leading = max(latestSystemFrame, latestMicrophoneFrame)
+        guard leading >= 0 else {
             return
         }
 
-        let completeUntil = min(latestSystemFrame, latestMicrophoneFrame) / framesPerChunk - 1
+        // 片方の音声が途切れても書き出しを止めない。止めるとメモリに溜め込み続け、
+        // 異常終了したときに録音全体を失うため。
+        let staleFrames = Int(staleSourceSeconds * sampleRate)
+        let system = usableFrame(latestSystemFrame, leading: leading, staleFrames: staleFrames)
+        let microphone = usableFrame(latestMicrophoneFrame, leading: leading, staleFrames: staleFrames)
+        guard system >= 0, microphone >= 0 else {
+            return
+        }
+        if system != latestSystemFrame {
+            warnStaleSource(&warnedStaleSystem, missing: "システム音声", remaining: "マイク音声")
+        }
+        if microphone != latestMicrophoneFrame {
+            warnStaleSource(&warnedStaleMicrophone, missing: "マイク音声", remaining: "システム音声")
+        }
+
+        let completeUntil = min(system, microphone) / framesPerChunk - 1
         for index in chunks.keys.filter({ $0 <= completeUntil }).sorted() {
             writeChunk(index, reportingProgress: true)
             chunks[index] = nil
         }
+    }
+
+    /// 書き出しの判断に使えるフレーム位置を返す。届いていないソースは無音として扱う。
+    private func usableFrame(_ frame: Int, leading: Int, staleFrames: Int) -> Int {
+        if frame < 0 {
+            // 一度も届いていないソースは、しばらく待ってから無音とみなす。
+            return leading >= staleFrames ? leading : -1
+        }
+        return leading - frame <= staleFrames ? frame : leading
+    }
+
+    private func warnStaleSource(_ warned: inout Bool, missing: String, remaining: String) {
+        guard !warned else {
+            return
+        }
+        warned = true
+        fputs(
+            "警告: \(missing)が\(Int(staleSourceSeconds))秒以上届いていません。"
+                + "\(remaining)のみで録音を続けます。\n",
+            stderr
+        )
     }
 
     private func writeChunk(_ index: Int, reportingProgress: Bool) {
@@ -246,7 +288,7 @@ final class ChunkMixer {
                 return nil
             }
             guard sourceFrameCount <= sourceBuffer.frameCapacity else {
-                fputs("入力音声バッファのフレーム数が容量を超えたため、このサンプルをスキップします。\\n", stderr)
+                fputs("警告: 入力音声バッファの容量を超えたため、このサンプルを取りこぼしました。\n", stderr)
                 return nil
             }
             sourceBuffer.frameLength = sourceFrameCount
@@ -405,6 +447,26 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
     }
 }
 
+/// 停止シグナルの対象。準備が整う前にシグナルが届くため、あとから差し込む。
+final class ActiveRecorder {
+    private let lock = NSLock()
+    private var recorder: Recorder?
+
+    func set(_ recorder: Recorder) {
+        lock.lock()
+        defer { lock.unlock() }
+        self.recorder = recorder
+    }
+
+    func current() -> Recorder? {
+        lock.lock()
+        defer { lock.unlock() }
+        return recorder
+    }
+}
+
+let activeRecorder = ActiveRecorder()
+
 func run() async throws {
     guard #available(macOS 15.0, *) else {
         throw RecorderError.unavailableMacOS
@@ -413,29 +475,35 @@ func run() async throws {
     let arguments = try RecorderArguments(arguments: Array(CommandLine.arguments.dropFirst()))
     try FileManager.default.createDirectory(at: arguments.outputDirectory, withIntermediateDirectories: true)
     let recorder = Recorder(arguments: arguments)
-
-    signal(SIGINT, SIG_IGN)
-    signal(SIGTERM, SIG_IGN)
-    let stopSignals = [SIGINT, SIGTERM].map { signalNumber -> DispatchSourceSignal in
-        let source = DispatchSource.makeSignalSource(signal: signalNumber, queue: .main)
-        source.setEventHandler {
-            Task {
-                // 停止を実行した側だけが終了する。重複した停止要求で、
-                // 書き出しの途中にプロセスを終わらせないため。
-                if await recorder.stop() {
-                    exit(0)
-                }
-            }
-        }
-        source.resume()
-        return source
-    }
+    activeRecorder.set(recorder)
 
     try await recorder.start()
-    _ = stopSignals
     await withUnsafeContinuation { (continuation: UnsafeContinuation<Void, Never>) in
         _ = continuation
     }
+}
+
+// シグナルの扱いは、起動直後に同期で決める。準備をTask内で行うと、
+// それより前に届いた停止シグナルが既定動作でプロセスを終わらせてしまう。
+signal(SIGINT, SIG_IGN)
+signal(SIGTERM, SIG_IGN)
+let stopSignals = [SIGINT, SIGTERM].map { signalNumber -> DispatchSourceSignal in
+    let source = DispatchSource.makeSignalSource(signal: signalNumber, queue: .main)
+    source.setEventHandler {
+        Task {
+            guard let recorder = activeRecorder.current() else {
+                // まだ録音が始まっていない。書き出すものが無いので、そのまま終わる。
+                exit(0)
+            }
+            // 停止を実行した側だけが終了する。重複した停止要求で、
+            // 書き出しの途中にプロセスを終わらせないため。
+            if await recorder.stop() {
+                exit(0)
+            }
+        }
+    }
+    source.resume()
+    return source
 }
 
 Task {
@@ -447,4 +515,5 @@ Task {
     }
 }
 
+_ = stopSignals
 dispatchMain()
