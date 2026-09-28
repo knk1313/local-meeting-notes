@@ -43,8 +43,11 @@ def rms_level(path: Path) -> float | None:
 
 def _sampled_rms(audio: BinaryIO, info: WavInfo, typecode: str) -> float | None:
     """data部を等間隔に抜き出し、その実効値を返す。"""
-    window = min(SAMPLE_WINDOW_BYTES, info.data_size)
-    step = max(window, info.data_size // SAMPLE_WINDOWS)
+    # 窓の位置と大きさをフレーム境界へ揃える。途中のバイトから読むと、
+    # サンプルの並びがずれて値が意味を失うため。
+    frame = info.bytes_per_frame
+    window = max(frame, min(SAMPLE_WINDOW_BYTES, info.data_size) // frame * frame)
+    step = max(window, info.data_size // SAMPLE_WINDOWS // frame * frame)
     total = 0.0
     count = 0
 
