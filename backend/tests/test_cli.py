@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 from app.cli import (
     EXIT_FAILED,
+    _transcribe_audio,
     EXIT_NO_SPEECH,
     RECORDING_FILENAME,
     TRANSCRIPT_FILENAME,
@@ -240,6 +241,57 @@ class CliTest(unittest.TestCase):
                 run_record(args, recorder=NeverCalledRecorder(), stt_provider=FakeSttProvider())
 
         self.assertIn("ANTHROPIC_API_KEY", str(raised.exception))
+
+    def test_shows_what_it_is_waiting_for_while_the_api_responds(self) -> None:
+        """API の応答待ちの間は、待っている理由が分かる表示を出したままにする。"""
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "recording.wav"
+            write_float_wav(path, tone(seconds=0.2))
+            statuses: list[str] = []
+            shown_while_waiting: list[str] = []
+
+            class WatchingSttProvider(SttProvider):
+                """呼び出された時点で表示されているステータスを記録する。"""
+
+                def transcribe(self, audio_path: Path) -> list[Segment]:
+                    shown_while_waiting.append(statuses[-1])
+                    return [Segment(speaker="A", start=0.0, end=1.0, text="発言")]
+
+            _transcribe_audio(path, WatchingSttProvider(), report_status=statuses.append)
+
+            self.assertEqual(
+                shown_while_waiting,
+                ["文字起こしAPIへ送信中... 完了まで数分かかることがあります"],
+            )
+
+    def test_numbers_each_part_while_waiting_for_the_api(self) -> None:
+        """分割した場合は、何本目を待っているかが分かるようにする。"""
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "recording.wav"
+            write_float_wav(path, tone(seconds=0.2))
+            statuses: list[str] = []
+            shown_while_waiting: list[str] = []
+
+            class WatchingSttProvider(SttProvider):
+                """呼び出された時点で表示されているステータスを記録する。"""
+
+                def transcribe(self, audio_path: Path) -> list[Segment]:
+                    shown_while_waiting.append(statuses[-1])
+                    return [Segment(speaker="A", start=0.0, end=1.0, text="発言")]
+
+            def split(source: Path, **_keywords: object) -> list[AudioPart]:
+                return [AudioPart(path=source, start_seconds=0.0), AudioPart(path=source, start_seconds=600.0)]
+
+            with patch("app.cli.split_for_transcription", side_effect=split):
+                _transcribe_audio(path, WatchingSttProvider(), report_status=statuses.append)
+
+            self.assertEqual(
+                shown_while_waiting,
+                [
+                    "文字起こしAPIへ送信中... (1/2) 完了まで数分かかることがあります",
+                    "文字起こしAPIへ送信中... (2/2) 完了まで数分かかることがあります",
+                ],
+            )
 
     def test_run_record_transcribes_whole_recording_and_writes_note(self) -> None:
         """録音停止後、会議全体の音声を1回だけ文字起こししてノートを生成する。"""

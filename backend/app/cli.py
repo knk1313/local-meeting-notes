@@ -241,11 +241,12 @@ def _transcribe_audio(
         parts = split_for_transcription(path, parts_dir=Path(work_dir), on_status=report_status)
         segments: list[Segment] = []
         for number, part in enumerate(parts, start=1):
-            if len(parts) > 1:
-                report_status(f"文字起こし中... ({number}/{len(parts)})")
             audio_path = compress_for_transcription(
                 part.path, max_bytes=MAX_FILE_SIZE_BYTES, work_dir=Path(work_dir), on_status=report_status
             )
+            # APIの応答待ちは数分に及ぶ。待っている理由が分かる表示を最後に出しておく。
+            position = f" ({number}/{len(parts)})" if len(parts) > 1 else ""
+            report_status(f"文字起こしAPIへ送信中...{position} 完了まで数分かかることがあります")
             part_segments = _shift_segments(provider.transcribe(audio_path), part.start_seconds)
             if on_part is not None:
                 on_part(part_segments)
