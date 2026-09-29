@@ -438,8 +438,8 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
         }
         // ストリームが死んだまま無音を録り続けないよう、ここで録音を終了する。
         fputs(
-            "録音が中断されました（画面スリープ・画面ロック・ディスプレイの抜き差しで起こります）: "
-                + "\(error.localizedDescription)\n",
+            "録音が中断されました: \(error.localizedDescription)。"
+                + "画面スリープ・画面ロック・ディスプレイの抜き差しで起こります。\n",
             stderr
         )
         mixer.finish()

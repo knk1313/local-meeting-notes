@@ -14,6 +14,7 @@ from typing import Callable, Sequence
 from app.audio import AudioCaptureError, AudioRecorder, MacOsAudioRecorder
 from app.audio.compress import compress_for_transcription
 from app.audio.level import is_silent
+from app.audio.wav import WavInfo, read_info
 from app.audio.split import split_for_transcription
 from app.llm import LlmError, MeetingAnalyzer, create_default_analyzer
 from app.output import MeetingMetadata, write_meeting_note
@@ -160,11 +161,6 @@ def run_record(
         if on_status is not None:
             on_status(message)
 
-    def report_warning(message: str) -> None:
-        print(message)
-        if on_warning is not None:
-            on_warning(message)
-
     def report_stage(stage: str) -> None:
         if on_stage is not None:
             on_stage(stage)
@@ -179,7 +175,12 @@ def run_record(
         report_status(f"録音に失敗しました: {reason}")
         return EXIT_FAILED
     if exit_code != EXIT_SUCCESS:
-        report_warning(f"録音が途中で終了しました（{reason}）。取得できたぶんで会議ノートを作成します。")
+        # 理由は録音ヘルパーが既に表示しているため、画面には続きだけを出す。
+        # 画面を持たない利用者向けに、通知側では理由を添える。
+        recorded = _format_duration(read_info(recording_path))
+        report_status(f"録音は途中で終了しましたが、取得できた{recorded}から会議ノートを作成します。")
+        if on_warning is not None:
+            on_warning(f"録音が途中で終了しました: {reason}")
 
     if not recording_path.is_file() or is_silent(recording_path):
         _discard_recording(output_dir, report_status)
@@ -280,6 +281,14 @@ def _ensure_providers_configured(
     if analyzer is None:
         # 生成時にキーとモデルの不足を検査するため、ここで一度作って捨てる。
         create_default_analyzer()
+
+
+def _format_duration(info: WavInfo | None) -> str:
+    """録音の長さを表示用の文字列にする。読み取れない場合は「ぶん」と濁す。"""
+    if info is None:
+        return "ぶん"
+    minutes, seconds = divmod(int(info.duration_seconds), 60)
+    return f"{minutes}分{seconds:02d}秒ぶん"
 
 
 def _append_transcript(path: Path, segments: list[Segment]) -> None:

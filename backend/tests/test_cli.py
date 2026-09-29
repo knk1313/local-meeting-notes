@@ -401,6 +401,7 @@ class CliTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary_directory:
             temporary_path = Path(temporary_directory)
             notes_dir = temporary_path / "notes"
+            statuses: list[str] = []
             warnings: list[str] = []
             args = argparse.Namespace(title="中断テスト", participants=[], tags=[], keep_transcript=False)
 
@@ -411,19 +412,21 @@ class CliTest(unittest.TestCase):
                     stt_provider=RecordingSttProvider(),
                     analyzer=FakeAnalyzer(),
                     notes_dir=notes_dir,
+                    on_status=statuses.append,
                     on_warning=warnings.append,
                 )
 
             self.assertEqual(exit_code, 0)
             self.assertTrue(next(notes_dir.glob("*.md")).is_file())
+            # 通知には理由を添え、画面には理由を繰り返さず続きだけを出す。
             self.assertEqual(
                 warnings,
                 [
-                    "録音が途中で終了しました（録音が中断されました: "
-                    "取り込みを行うディスプレイまたはウインドウが見つかりませんでした）。"
-                    "取得できたぶんで会議ノートを作成します。"
+                    "録音が途中で終了しました: 録音が中断されました: "
+                    "取り込みを行うディスプレイまたはウインドウが見つかりませんでした"
                 ],
             )
+            self.assertIn("録音は途中で終了しましたが、取得できた0分00秒ぶんから会議ノートを作成します。", statuses)
 
     def test_run_record_reports_recorder_failure_reason(self) -> None:
         """録音ヘルパーが失敗した場合は、終了コードではなく理由を伝える。"""
