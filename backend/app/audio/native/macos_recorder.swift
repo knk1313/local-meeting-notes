@@ -336,6 +336,7 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
     private let stopLock = NSLock()
     private var stream: SCStream?
     private var isStopping = false
+    private var sleepActivity: NSObjectProtocol?
 
     init(arguments: RecorderArguments) {
         self.arguments = arguments
@@ -363,7 +364,20 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
         try stream.addStreamOutput(self, type: .microphone, sampleHandlerQueue: sampleQueue)
         self.stream = stream
         try await stream.startCapture()
-        print("録音を開始しました。Ctrl+Cで停止します。")
+        // 画面がスリープするとScreenCaptureKitの取り込みが止まり、録音が中断される。
+        // 録音している間だけ抑止し、停止時に元へ戻す。
+        sleepActivity = ProcessInfo.processInfo.beginActivity(
+            options: [.idleDisplaySleepDisabled],
+            reason: "会議を録音中"
+        )
+        print("録音を開始しました。Ctrl+Cで停止します。録音中は画面を自動スリープさせません。")
+    }
+
+    private func allowSleepAgain() {
+        if let activity = sleepActivity {
+            ProcessInfo.processInfo.endActivity(activity)
+            sleepActivity = nil
+        }
     }
 
     private func ensureMicrophonePermission() async throws {
@@ -419,6 +433,7 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
                 stderr
             )
         }
+        allowSleepAgain()
         mixer.finish()
         print("録音を停止しました。")
         return true
