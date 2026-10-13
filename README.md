@@ -61,10 +61,6 @@ python -m app note ../data/recordings_YYYYMMDDHHMMSS/transcript.txt --title "定
 python -m app.cli ../data/recordings_YYYYMMDDHHMMSS/recording.wav --title "定例MTG"
 ```
 
-### ローカル API（任意）
-
-`python -m app.api` で `http://127.0.0.1:8000` に立ち上がる。会議の開始・状態取得・停止（`/api/meetings`）と、保存済みノートの一覧・本文（`/api/notes`）を HTTP で扱える。主な入口は CLI で、画面は持たない。
-
 ## 仕組みと制限
 
 **録音** — macOS 標準の ScreenCaptureKit でシステム音声と既定マイクをミックスし、会議全体を 1 本の `recording.wav` に保存する。途中で分割しないので文章が切れず、文字起こしの精度が落ちにくい。録音中は画面の自動スリープを抑止する（画面が寝るとキャプチャが止まるため）。手動の画面ロックやディスプレイの切断で中断した場合は、取得できたぶんで会議ノートを作る。`.env` の `RECORDING_CHUNK_SECONDS` は録音ファイルへ書き出す単位（既定 15 秒）で、文字起こしの分割とは無関係。
@@ -120,8 +116,6 @@ local-meeting-notes/
 │   ├── app/
 │   │   ├── __main__.py   # `python -m app record` / `python -m app note`
 │   │   ├── cli.py        # 録音・文字起こし・要約の一気通貫処理
-│   │   ├── api.py        # ローカルAPI（任意）
-│   │   ├── notes.py      # 保存済み会議ノートの読み取り
 │   │   ├── settings.py   # .env の読み込み
 │   │   ├── audio/        # 音声キャプチャ・圧縮・分割・音量判定
 │   │   ├── stt/          # STTプロバイダ抽象化層

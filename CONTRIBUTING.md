@@ -87,9 +87,6 @@ cp ../.env.example ../.env
 ```bash
 # 録音して会議ノートを作る（Ctrl+C で停止）
 python -m app record --title "定例MTG"
-
-# ローカルAPI（任意）
-python -m app.api
 ```
 
 ### Mac固有の注意事項
