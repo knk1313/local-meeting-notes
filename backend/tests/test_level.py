@@ -26,7 +26,7 @@ class LevelTest(unittest.TestCase):
         self.assertEqual(rms_level(path), 0.0)
         self.assertTrue(is_silent(path))
 
-    def test_keeps_audible_chunk(self) -> None:
+    def test_keeps_audible_audio(self) -> None:
         """発話相当の音量があるチャンクは無音と判定しない。"""
         path = self.directory / "tone.wav"
         write_float_wav(path, tone())

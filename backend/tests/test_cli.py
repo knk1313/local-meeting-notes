@@ -59,7 +59,7 @@ class FakeAnalyzer:
 class InterruptedRecorder(AudioRecorder):
     """途中まで録音したところで、キャプチャ中断により異常終了する録音器。"""
 
-    def record(self, output_dir: Path, chunk_seconds: int) -> int:
+    def record(self, output_dir: Path, block_seconds: int) -> int:
         """発話のある録音を残したまま異常終了する。"""
         output_dir.mkdir(parents=True, exist_ok=True)
         write_float_wav(output_dir / RECORDING_FILENAME, tone())
@@ -74,7 +74,7 @@ class InterruptedRecorder(AudioRecorder):
 class FailingRecorder(AudioRecorder):
     """録音を開始できずに終了する録音器。"""
 
-    def record(self, output_dir: Path, chunk_seconds: int) -> int:
+    def record(self, output_dir: Path, block_seconds: int) -> int:
         """音声を残さずに失敗する。"""
         return 1
 
@@ -89,19 +89,19 @@ class FakeRecorder(AudioRecorder):
 
     def __init__(self) -> None:
         self.output_dir: Path | None = None
-        self.chunk_seconds: int | None = None
+        self.block_seconds: int | None = None
 
-    def record(self, output_dir: Path, chunk_seconds: int) -> int:
+    def record(self, output_dir: Path, block_seconds: int) -> int:
         """受け取った録音設定を保存し、音声を残さず成功終了する。"""
         self.output_dir = output_dir
-        self.chunk_seconds = chunk_seconds
+        self.block_seconds = block_seconds
         return 0
 
 
 class NeverCalledRecorder(AudioRecorder):
     """呼び出されてはいけないテスト用録音器。"""
 
-    def record(self, output_dir: Path, chunk_seconds: int) -> int:
+    def record(self, output_dir: Path, block_seconds: int) -> int:
         """設定不足のまま録音が始まったことを検知する。"""
         raise AssertionError("設定が足りない場合は、録音を始めてはいけない。")
 
@@ -109,7 +109,7 @@ class NeverCalledRecorder(AudioRecorder):
 class FakeMeetingRecorder(AudioRecorder):
     """発話のある録音を1ファイル残すテスト用録音器。"""
 
-    def record(self, output_dir: Path, chunk_seconds: int) -> int:
+    def record(self, output_dir: Path, block_seconds: int) -> int:
         """会議全体の音声を書き出して正常終了する。"""
         output_dir.mkdir(parents=True, exist_ok=True)
         write_float_wav(output_dir / RECORDING_FILENAME, tone())
@@ -119,7 +119,7 @@ class FakeMeetingRecorder(AudioRecorder):
 class SilentRecorder(AudioRecorder):
     """発話が含まれない録音を残すテスト用録音器。"""
 
-    def record(self, output_dir: Path, chunk_seconds: int) -> int:
+    def record(self, output_dir: Path, block_seconds: int) -> int:
         """無音だけの音声を書き出して正常終了する。"""
         output_dir.mkdir(parents=True, exist_ok=True)
         write_float_wav(output_dir / RECORDING_FILENAME, silence())
@@ -195,7 +195,7 @@ class CliTest(unittest.TestCase):
         self.enterContext(patch("app.cli._discard_recording"))
         args = argparse.Namespace(title=None, participants=[], tags=[], keep_transcript=False)
 
-        with patch("app.cli.settings", replace(settings, recording_chunk_seconds=20)):
+        with patch("app.cli.settings", replace(settings, recording_block_seconds=20)):
             exit_code = run_record(args, recorder=recorder)
 
         # チャンクが1つも出ないまま停止した録音は、ノートを作らず破棄する。
@@ -203,7 +203,7 @@ class CliTest(unittest.TestCase):
         self.assertIsNotNone(recorder.output_dir)
         self.assertEqual(recorder.output_dir.parent, Path(__file__).resolve().parents[2] / "data")
         self.assertRegex(recorder.output_dir.name, r"^recordings_\d{14}$")
-        self.assertEqual(recorder.chunk_seconds, 20)
+        self.assertEqual(recorder.block_seconds, 20)
 
     def test_run_pipeline_writes_note_and_debug_transcript(self) -> None:
         """API層を差し替え、一気通貫でMarkdownとデバッグ用文字起こしを保存できる。"""
@@ -417,7 +417,6 @@ class CliTest(unittest.TestCase):
             temporary_path = Path(temporary_directory)
             notes_dir = temporary_path / "notes"
             statuses: list[str] = []
-            warnings: list[str] = []
             args = argparse.Namespace(title="中断テスト", participants=[], tags=[], keep_transcript=False)
 
             with patch("app.cli._resolve_recording_output_dir", return_value=temporary_path / "recording"):
@@ -428,19 +427,11 @@ class CliTest(unittest.TestCase):
                     analyzer=FakeAnalyzer(),
                     notes_dir=notes_dir,
                     on_status=statuses.append,
-                    on_warning=warnings.append,
                 )
 
             self.assertEqual(exit_code, 0)
             self.assertTrue(next(notes_dir.glob("*.md")).is_file())
-            # 通知には理由を添え、画面には理由を繰り返さず続きだけを出す。
-            self.assertEqual(
-                warnings,
-                [
-                    "録音が途中で終了しました: 録音が中断されました: "
-                    "取り込みを行うディスプレイまたはウインドウが見つかりませんでした"
-                ],
-            )
+            # 理由は録音ヘルパーが表示済みなので、画面には続きだけを出す。
             self.assertIn("録音は途中で終了しましたが、取得できた0分00秒ぶんから会議ノートを作成します。", statuses)
 
     def test_run_record_reports_recorder_failure_reason(self) -> None:

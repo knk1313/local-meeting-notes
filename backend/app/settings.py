@@ -25,7 +25,7 @@ class Settings:
     anthropic_workspace_id: str | None
     claude_model: str | None
     notes_dir: Path
-    recording_chunk_seconds: int
+    recording_block_seconds: int
 
     @classmethod
     def from_environment(cls) -> "Settings":
@@ -34,13 +34,13 @@ class Settings:
         if not notes_dir.is_absolute():
             notes_dir = PROJECT_ROOT / notes_dir
 
-        chunk_seconds_text = os.getenv("RECORDING_CHUNK_SECONDS", "15")
+        block_seconds_text = os.getenv("RECORDING_BLOCK_SECONDS", "15")
         try:
-            recording_chunk_seconds = int(chunk_seconds_text)
+            recording_block_seconds = int(block_seconds_text)
         except ValueError as exc:
             raise ValueError(
-                "RECORDING_CHUNK_SECONDS には秒数を整数で指定してください: "
-                f"{chunk_seconds_text}"
+                "RECORDING_BLOCK_SECONDS には秒数を整数で指定してください: "
+                f"{block_seconds_text}"
             ) from exc
 
         return cls(
@@ -49,7 +49,7 @@ class Settings:
             anthropic_workspace_id=os.getenv("ANTHROPIC_WORKSPACE_ID"),
             claude_model=os.getenv("CLAUDE_MODEL"),
             notes_dir=notes_dir,
-            recording_chunk_seconds=recording_chunk_seconds,
+            recording_block_seconds=recording_block_seconds,
         )
 
 

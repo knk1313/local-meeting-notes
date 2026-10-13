@@ -28,10 +28,6 @@ from app.stt.openai import MAX_FILE_SIZE_BYTES, OpenAiSttProvider
 #: 分割した断片を同時に文字起こしする数。待ち時間の大半はAPIの応答なので並行させる。
 TRANSCRIPTION_WORKERS = 3
 
-#: 処理の段階。API層がそのまま会議の状態として扱う。
-STAGE_TRANSCRIBING = "transcribing"
-STAGE_SUMMARIZING = "summarizing"
-
 #: 録音ヘルパーが書き出す、会議全体の音声ファイル名。
 RECORDING_FILENAME = "recording.wav"
 
@@ -150,10 +146,6 @@ def run_record(
     analyzer: MeetingAnalyzer | None = None,
     notes_dir: Path | None = None,
     on_status: Callable[[str], None] | None = None,
-    on_segments: Callable[[list[Segment]], None] | None = None,
-    on_warning: Callable[[str], None] | None = None,
-    on_stage: Callable[[str], None] | None = None,
-    on_note: Callable[[Path], None] | None = None,
 ) -> int:
     """録音を1ファイルとして取り、停止後にまとめて文字起こしして会議ノートを保存する。"""
     _ensure_providers_configured(stt_provider, analyzer)
@@ -166,13 +158,9 @@ def run_record(
         if on_status is not None:
             on_status(message)
 
-    def report_stage(stage: str) -> None:
-        if on_stage is not None:
-            on_stage(stage)
-
     report_status(f"録音セッションの出力先: {output_dir}")
     report_status("録音中... 停止すると文字起こしと会議ノートを生成します。")
-    exit_code = active_recorder.record(output_dir, settings.recording_chunk_seconds)
+    exit_code = active_recorder.record(output_dir, settings.recording_block_seconds)
 
     # 権限拒否や画面スリープによる中断は、録音ヘルパーのstderrにしか理由が出ない。
     reason = active_recorder.last_error or f"終了コード {exit_code}"
@@ -181,18 +169,14 @@ def run_record(
         return EXIT_FAILED
     if exit_code != EXIT_SUCCESS:
         # 理由は録音ヘルパーが既に表示しているため、画面には続きだけを出す。
-        # 画面を持たない利用者向けに、通知側では理由を添える。
         recorded = _format_duration(read_info(recording_path))
         report_status(f"録音は途中で終了しましたが、取得できた{recorded}から会議ノートを作成します。")
-        if on_warning is not None:
-            on_warning(f"録音が途中で終了しました: {reason}")
 
     if not recording_path.is_file() or is_silent(recording_path):
         _discard_recording(output_dir, report_status)
         report_status("発話を検出できませんでした。会議ノートは作成せず、録音データは破棄しました。")
         return EXIT_NO_SPEECH
 
-    report_stage(STAGE_TRANSCRIBING)
     report_status("文字起こし中...")
     transcription_started = time.monotonic()
     provider = stt_provider if stt_provider is not None else OpenAiSttProvider()
@@ -201,8 +185,6 @@ def run_record(
     def keep_segments(segments: list[Segment]) -> None:
         # 途中で失敗しても取得済みを失わないよう、断片ごとに書き足す。
         _append_transcript(transcript_path, segments)
-        if on_segments is not None and segments:
-            on_segments(segments)
 
     try:
         segments = _transcribe_audio(
@@ -220,16 +202,13 @@ def run_record(
         return EXIT_NO_SPEECH
 
     report_status(f"文字起こしを保存しました: {transcript_path}（所要 {_elapsed(transcription_started)}）")
-    report_stage(STAGE_SUMMARIZING)
-    output_path = _write_analysis_result(
+    _write_analysis_result(
         args,
         transcript,
         notes_dir=notes_dir or settings.notes_dir,
         analyzer=analyzer,
         report_status=report_status,
     )
-    if on_note is not None:
-        on_note(output_path)
     return EXIT_SUCCESS
 
 

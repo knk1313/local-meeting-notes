@@ -13,7 +13,7 @@ from unittest.mock import patch
 from threading import Thread
 
 from app.audio import AudioCaptureError
-from app.audio.macos import MacOsAudioRecorder, _validate_chunk_seconds
+from app.audio.macos import MacOsAudioRecorder, _validate_block_seconds
 
 
 STUBBORN_HELPER = """#!/bin/sh
@@ -37,17 +37,17 @@ done
 class MacOsAudioRecorderTest(unittest.TestCase):
     """録音ヘルパーを起動する前の入力検証を確認する。"""
 
-    def test_accepts_chunk_length_within_supported_range(self) -> None:
-        """5〜60秒のチャンク長を受け付ける。"""
-        _validate_chunk_seconds(5)
-        _validate_chunk_seconds(60)
+    def test_accepts_block_length_within_supported_range(self) -> None:
+        """5〜60秒の書き出し単位を受け付ける。"""
+        _validate_block_seconds(5)
+        _validate_block_seconds(60)
 
-    def test_rejects_chunk_length_outside_supported_range(self) -> None:
-        """範囲外のチャンク長には分かりやすい例外を返す。"""
+    def test_rejects_block_length_outside_supported_range(self) -> None:
+        """範囲外の書き出し単位には分かりやすい例外を返す。"""
         with self.assertRaises(AudioCaptureError):
-            _validate_chunk_seconds(4)
+            _validate_block_seconds(4)
         with self.assertRaises(AudioCaptureError):
-            _validate_chunk_seconds(61)
+            _validate_block_seconds(61)
 
 
 class RecorderFailureTest(unittest.TestCase):

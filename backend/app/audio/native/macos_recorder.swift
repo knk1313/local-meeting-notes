@@ -37,11 +37,11 @@ enum RecorderError: LocalizedError {
 
 struct RecorderArguments {
     let outputDirectory: URL
-    let chunkSeconds: Int
+    let blockSeconds: Int
 
     init(arguments: [String]) throws {
         var outputDirectory: URL?
-        var chunkSeconds: Int?
+        var blockSeconds: Int?
         var index = 0
 
         while index < arguments.count {
@@ -53,44 +53,44 @@ struct RecorderArguments {
             switch argument {
             case "--output-dir":
                 outputDirectory = URL(fileURLWithPath: arguments[index + 1])
-            case "--chunk-seconds":
-                chunkSeconds = Int(arguments[index + 1])
+            case "--block-seconds":
+                blockSeconds = Int(arguments[index + 1])
             default:
                 throw RecorderError.invalidArguments("未対応の引数です: \(argument)")
             }
             index += 2
         }
 
-        guard let outputDirectory, let chunkSeconds else {
-            throw RecorderError.invalidArguments("--output-dir と --chunk-seconds を指定してください。")
+        guard let outputDirectory, let blockSeconds else {
+            throw RecorderError.invalidArguments("--output-dir と --block-seconds を指定してください。")
         }
         self.outputDirectory = outputDirectory
-        self.chunkSeconds = chunkSeconds
+        self.blockSeconds = blockSeconds
     }
 }
 
-final class ChunkMixer {
+final class RecordingMixer {
     private let lock = NSLock()
     private let outputDirectory: URL
-    private let chunkSeconds: Int
-    private let framesPerChunk: Int
+    private let blockSeconds: Int
+    private let framesPerBlock: Int
     private var masterAudioFile: AVAudioFile?
     private var sessionStartTime: Double?
-    private var chunks: [Int: Chunk] = [:]
+    private var blocks: [Int: Block] = [:]
     private var latestSystemFrame = -1
     private var latestMicrophoneFrame = -1
     private var warnedStaleSystem = false
     private var warnedStaleMicrophone = false
 
-    private struct Chunk {
+    private struct Block {
         var system: [Float]
         var microphone: [Float]
     }
 
-    init(outputDirectory: URL, chunkSeconds: Int) {
+    init(outputDirectory: URL, blockSeconds: Int) {
         self.outputDirectory = outputDirectory
-        self.chunkSeconds = chunkSeconds
-        self.framesPerChunk = Int(sampleRate) * chunkSeconds
+        self.blockSeconds = blockSeconds
+        self.framesPerBlock = Int(sampleRate) * blockSeconds
     }
 
     func append(_ sampleBuffer: CMSampleBuffer, source: SCStreamOutputType) {
@@ -115,17 +115,17 @@ final class ChunkMixer {
 
         let firstFrame = max(0, Int((presentationTime - sessionStartTime) * sampleRate))
         append(pcmBuffer, firstFrame: firstFrame, source: source)
-        flushCompletedChunks()
+        flushCompletedBlocks()
     }
 
     func finish() {
         lock.lock()
         defer { lock.unlock() }
 
-        for index in chunks.keys.sorted() {
-            writeChunk(index, reportingProgress: false)
+        for index in blocks.keys.sorted() {
+            writeBlock(index, reportingProgress: false)
         }
-        chunks.removeAll()
+        blocks.removeAll()
 
         // AVAudioFileはここで解放しないとWAVヘッダのサイズが0のままになる。
         masterAudioFile = nil
@@ -139,21 +139,21 @@ final class ChunkMixer {
         let frameCount = Int(buffer.frameLength)
         for offset in 0..<frameCount {
             let absoluteFrame = firstFrame + offset
-            let chunkIndex = absoluteFrame / framesPerChunk
-            let frameIndex = absoluteFrame % framesPerChunk
-            if chunks[chunkIndex] == nil {
-                chunks[chunkIndex] = Chunk(
-                    system: Array(repeating: 0, count: framesPerChunk),
-                    microphone: Array(repeating: 0, count: framesPerChunk)
+            let blockIndex = absoluteFrame / framesPerBlock
+            let frameIndex = absoluteFrame % framesPerBlock
+            if blocks[blockIndex] == nil {
+                blocks[blockIndex] = Block(
+                    system: Array(repeating: 0, count: framesPerBlock),
+                    microphone: Array(repeating: 0, count: framesPerBlock)
                 )
             }
 
             switch source {
             case .audio:
-                chunks[chunkIndex]?.system[frameIndex] += samples[offset]
+                blocks[blockIndex]?.system[frameIndex] += samples[offset]
                 latestSystemFrame = max(latestSystemFrame, absoluteFrame)
             case .microphone:
-                chunks[chunkIndex]?.microphone[frameIndex] += samples[offset]
+                blocks[blockIndex]?.microphone[frameIndex] += samples[offset]
                 latestMicrophoneFrame = max(latestMicrophoneFrame, absoluteFrame)
             default:
                 break
@@ -161,7 +161,7 @@ final class ChunkMixer {
         }
     }
 
-    private func flushCompletedChunks() {
+    private func flushCompletedBlocks() {
         let leading = max(latestSystemFrame, latestMicrophoneFrame)
         guard leading >= 0 else {
             return
@@ -182,10 +182,10 @@ final class ChunkMixer {
             warnStaleSource(&warnedStaleMicrophone, missing: "マイク音声", remaining: "システム音声")
         }
 
-        let completeUntil = min(system, microphone) / framesPerChunk - 1
-        for index in chunks.keys.filter({ $0 <= completeUntil }).sorted() {
-            writeChunk(index, reportingProgress: true)
-            chunks[index] = nil
+        let completeUntil = min(system, microphone) / framesPerBlock - 1
+        for index in blocks.keys.filter({ $0 <= completeUntil }).sorted() {
+            writeBlock(index, reportingProgress: true)
+            blocks[index] = nil
         }
     }
 
@@ -210,8 +210,8 @@ final class ChunkMixer {
         )
     }
 
-    private func writeChunk(_ index: Int, reportingProgress: Bool) {
-        guard let chunk = chunks[index] else {
+    private func writeBlock(_ index: Int, reportingProgress: Bool) {
+        guard let block = blocks[index] else {
             return
         }
 
@@ -221,19 +221,19 @@ final class ChunkMixer {
             channels: 1,
             interleaved: false
         )!
-        let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(framesPerChunk))!
-        buffer.frameLength = AVAudioFrameCount(framesPerChunk)
+        let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(framesPerBlock))!
+        buffer.frameLength = AVAudioFrameCount(framesPerBlock)
 
         guard let destination = buffer.floatChannelData?.pointee else {
             return
         }
-        for frame in 0..<framesPerChunk {
-            destination[frame] = max(-1, min(1, (chunk.system[frame] + chunk.microphone[frame]) * 0.5))
+        for frame in 0..<framesPerBlock {
+            destination[frame] = max(-1, min(1, (block.system[frame] + block.microphone[frame]) * 0.5))
         }
 
         writeMasterRecording(buffer, format: format)
         if reportingProgress {
-            reportProgress(secondsRecorded: (index + 1) * chunkSeconds)
+            reportProgress(secondsRecorded: (index + 1) * blockSeconds)
         }
     }
 
@@ -331,7 +331,7 @@ final class ChunkMixer {
 @available(macOS 15.0, *)
 final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
     private let arguments: RecorderArguments
-    private let mixer: ChunkMixer
+    private let mixer: RecordingMixer
     private let sampleQueue = DispatchQueue(label: "localMeetingNotes.audioSamples")
     private let stopLock = NSLock()
     private var stream: SCStream?
@@ -340,7 +340,7 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
 
     init(arguments: RecorderArguments) {
         self.arguments = arguments
-        self.mixer = ChunkMixer(outputDirectory: arguments.outputDirectory, chunkSeconds: arguments.chunkSeconds)
+        self.mixer = RecordingMixer(outputDirectory: arguments.outputDirectory, blockSeconds: arguments.blockSeconds)
     }
 
     func start() async throws {

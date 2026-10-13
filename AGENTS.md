@@ -20,7 +20,6 @@
 | 仮想環境の有効化 | `source .venv/bin/activate` |
 | 依存インストール | `pip install -r requirements.txt` |
 | テスト | `python -m unittest discover -s tests -t tests` |
-| ローカルAPIの起動 | `python -m app.api` |
 
 ## git 操作
 
