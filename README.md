@@ -39,12 +39,15 @@ python -m app record --title "定例MTG" --participant "田中" --tag project-a
 | `--participant` | 参加者。複数指定可 |
 | `--tag` | タグ。複数指定可 |
 | `--keep-transcript` | 文字起こしだけの `.transcript.txt` もノートの隣に保存する |
+| `--transcribe-only` | 文字起こしで止め、要約（Claude API）を呼ばない。文字起こしは `notes/` に `.transcript.txt` として保存され、あとから `python -m app note` で会議ノートにできる |
 
 ### 音声ファイルから作る
 
 ```sh
 python -m app.cli ../data/meeting.m4a --title "定例MTG"
 ```
+
+`--transcribe-only` は、こちらでも使える。
 
 ### 途中で失敗したときに作り直す
 

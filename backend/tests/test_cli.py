@@ -106,6 +106,14 @@ class NeverCalledRecorder(AudioRecorder):
         raise AssertionError("設定が足りない場合は、録音を始めてはいけない。")
 
 
+class NeverCalledAnalyzer:
+    """呼び出されてはいけないテスト用の要約器。"""
+
+    def analyze(self, transcript: str) -> MeetingAnalysis:
+        """要約を呼ばない指定なのに呼ばれたことを検知する。"""
+        raise AssertionError("文字起こしで止める指定では、要約を呼んではいけない。")
+
+
 class FakeMeetingRecorder(AudioRecorder):
     """発話のある録音を1ファイル残すテスト用録音器。"""
 
@@ -193,7 +201,7 @@ class CliTest(unittest.TestCase):
         recorder = FakeRecorder()
         # 実行中の録音を消さないよう、削除処理だけ差し替える。
         self.enterContext(patch("app.cli._discard_recording"))
-        args = argparse.Namespace(title=None, participants=[], tags=[], keep_transcript=False)
+        args = argparse.Namespace(title=None, participants=[], tags=[], keep_transcript=False, transcribe_only=False)
 
         with patch("app.cli.settings", replace(settings, recording_block_seconds=20)):
             exit_code = run_record(args, recorder=recorder)
@@ -215,6 +223,7 @@ class CliTest(unittest.TestCase):
                 participants=["田中"],
                 tags=["project-a"],
                 keep_transcript=True,
+                transcribe_only=False,
             )
             output_path = run_pipeline(
                 args,
@@ -228,7 +237,7 @@ class CliTest(unittest.TestCase):
 
     def test_run_record_stops_before_recording_without_stt_key(self) -> None:
         """STTのキーが無い場合は、録音を始める前に止める。"""
-        args = argparse.Namespace(title="設定テスト", participants=[], tags=[], keep_transcript=False)
+        args = argparse.Namespace(title="設定テスト", participants=[], tags=[], keep_transcript=False, transcribe_only=False)
 
         with patch("app.cli.settings", replace(settings, openai_api_key=None)):
             with self.assertRaises(SttError) as raised:
@@ -238,7 +247,7 @@ class CliTest(unittest.TestCase):
 
     def test_run_record_stops_before_recording_without_llm_key(self) -> None:
         """要約用のキーが無い場合も、録音を始める前に止める。"""
-        args = argparse.Namespace(title="設定テスト", participants=[], tags=[], keep_transcript=False)
+        args = argparse.Namespace(title="設定テスト", participants=[], tags=[], keep_transcript=False, transcribe_only=False)
 
         with patch("app.llm.anthropic.settings", replace(settings, anthropic_api_key=None)):
             with self.assertRaises(LlmError) as raised:
@@ -317,7 +326,7 @@ class CliTest(unittest.TestCase):
             recording_dir = temporary_path / "recording"
             notes_dir = temporary_path / "notes"
             provider = RecordingSttProvider()
-            args = argparse.Namespace(title="一括文字起こし", participants=[], tags=[], keep_transcript=False)
+            args = argparse.Namespace(title="一括文字起こし", participants=[], tags=[], keep_transcript=False, transcribe_only=False)
 
             with patch("app.cli._resolve_recording_output_dir", return_value=recording_dir):
                 exit_code = run_record(
@@ -338,7 +347,7 @@ class CliTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary_directory:
             temporary_path = Path(temporary_directory)
             recording_dir = temporary_path / "recording"
-            args = argparse.Namespace(title="保存テスト", participants=[], tags=[], keep_transcript=False)
+            args = argparse.Namespace(title="保存テスト", participants=[], tags=[], keep_transcript=False, transcribe_only=False)
 
             with patch("app.cli._resolve_recording_output_dir", return_value=recording_dir):
                 run_record(
@@ -357,7 +366,7 @@ class CliTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary_directory:
             temporary_path = Path(temporary_directory)
             recording_dir = temporary_path / "recording"
-            args = argparse.Namespace(title="分割テスト", participants=[], tags=[], keep_transcript=False)
+            args = argparse.Namespace(title="分割テスト", participants=[], tags=[], keep_transcript=False, transcribe_only=False)
 
             def split(path: Path, **_keywords: object) -> list[AudioPart]:
                 return [AudioPart(path=path, start_seconds=0.0), AudioPart(path=path, start_seconds=600.0)]
@@ -386,7 +395,7 @@ class CliTest(unittest.TestCase):
             temporary_path = Path(temporary_directory)
             recording_dir = temporary_path / "recording"
             statuses: list[str] = []
-            args = argparse.Namespace(title="途中失敗テスト", participants=[], tags=[], keep_transcript=False)
+            args = argparse.Namespace(title="途中失敗テスト", participants=[], tags=[], keep_transcript=False, transcribe_only=False)
 
             def split(path: Path, **_keywords: object) -> list[AudioPart]:
                 return [AudioPart(path=path, start_seconds=0.0), AudioPart(path=path, start_seconds=600.0)]
@@ -417,7 +426,7 @@ class CliTest(unittest.TestCase):
             temporary_path = Path(temporary_directory)
             notes_dir = temporary_path / "notes"
             statuses: list[str] = []
-            args = argparse.Namespace(title="中断テスト", participants=[], tags=[], keep_transcript=False)
+            args = argparse.Namespace(title="中断テスト", participants=[], tags=[], keep_transcript=False, transcribe_only=False)
 
             with patch("app.cli._resolve_recording_output_dir", return_value=temporary_path / "recording"):
                 exit_code = run_record(
@@ -479,7 +488,7 @@ class CliTest(unittest.TestCase):
         recording_dir = temporary_path / "recording"
         notes_dir = temporary_path / "notes"
         statuses: list[str] = []
-        args = argparse.Namespace(title="テスト", participants=[], tags=[], keep_transcript=False)
+        args = argparse.Namespace(title="テスト", participants=[], tags=[], keep_transcript=False, transcribe_only=False)
 
         with patch("app.cli._resolve_recording_output_dir", return_value=recording_dir):
             exit_code = run_record(
@@ -505,6 +514,80 @@ class CliTest(unittest.TestCase):
 
             self.assertIn("復旧した会議", note_path.read_text(encoding="utf-8"))
             self.assertIn("[A] 0.00s–1.00s: 復旧テストです", note_path.read_text(encoding="utf-8"))
+
+    def test_record_parser_accepts_transcribe_only(self) -> None:
+        """録音コマンドで、文字起こしで止める指定を受け付ける。"""
+        self.assertTrue(build_record_parser().parse_args(["--transcribe-only"]).transcribe_only)
+        self.assertFalse(build_record_parser().parse_args([]).transcribe_only)
+
+    def test_run_record_stops_after_transcription_when_requested(self) -> None:
+        """文字起こしで止める指定では、要約を呼ばず文字起こしだけを保存する。"""
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_path = Path(temporary_directory)
+            notes_dir = temporary_path / "notes"
+            statuses: list[str] = []
+            args = argparse.Namespace(
+                title="要約なし", participants=[], tags=[], keep_transcript=False, transcribe_only=True
+            )
+
+            with patch("app.cli._resolve_recording_output_dir", return_value=temporary_path / "recording"):
+                exit_code = run_record(
+                    args,
+                    recorder=FakeMeetingRecorder(),
+                    stt_provider=RecordingSttProvider(),
+                    analyzer=NeverCalledAnalyzer(),
+                    notes_dir=notes_dir,
+                    on_status=statuses.append,
+                )
+
+            self.assertEqual(exit_code, 0)
+            saved = sorted(path.name for path in notes_dir.iterdir())
+            self.assertEqual(len(saved), 1)
+            self.assertTrue(saved[0].endswith("-要約なし.transcript.txt"))
+            self.assertEqual((notes_dir / saved[0]).read_text(encoding="utf-8"), "[A] 0.00s–1.00s: recording\n")
+            self.assertIn("python -m app note", statuses[-1])
+            self.assertIn('--title "要約なし"', statuses[-1])
+
+    def test_run_record_does_not_require_llm_settings_when_transcribe_only(self) -> None:
+        """文字起こしで止めるなら、要約用のキーが無くても録音を始められる。"""
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_path = Path(temporary_directory)
+            args = argparse.Namespace(
+                title="設定なし", participants=[], tags=[], keep_transcript=False, transcribe_only=True
+            )
+
+            with (
+                patch("app.llm.anthropic.settings", replace(settings, anthropic_api_key=None)),
+                patch("app.cli._resolve_recording_output_dir", return_value=temporary_path / "recording"),
+            ):
+                exit_code = run_record(
+                    args,
+                    recorder=FakeMeetingRecorder(),
+                    stt_provider=RecordingSttProvider(),
+                    notes_dir=temporary_path / "notes",
+                )
+
+            self.assertEqual(exit_code, 0)
+
+    def test_run_pipeline_stops_after_transcription_when_requested(self) -> None:
+        """音声ファイルからの生成でも、文字起こしで止められる。"""
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            notes_dir = Path(temporary_directory)
+            args = argparse.Namespace(
+                audio_path=Path("sample.m4a"),
+                title="定例MTG",
+                participants=[],
+                tags=[],
+                keep_transcript=False,
+                transcribe_only=True,
+            )
+
+            output_path = run_pipeline(
+                args, stt_provider=FakeSttProvider(), analyzer=NeverCalledAnalyzer(), notes_dir=notes_dir
+            )
+
+            self.assertTrue(output_path.name.endswith("-定例MTG.transcript.txt"))
+            self.assertEqual([path.name for path in notes_dir.iterdir()], [output_path.name])
 
 
 if __name__ == "__main__":

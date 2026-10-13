@@ -6,7 +6,10 @@ import unittest
 from datetime import date
 
 from app.llm import MeetingAnalysis, Task
-from app.output.markdown import MeetingMetadata, render_meeting_note
+import tempfile
+from pathlib import Path
+
+from app.output.markdown import MeetingMetadata, render_meeting_note, write_transcript
 
 
 class RenderMeetingNoteTest(unittest.TestCase):
@@ -49,6 +52,23 @@ class RenderMeetingNoteTest(unittest.TestCase):
         summary_section = note.split("### 決定事項")[0]
         self.assertIn("{{transcript}} の扱いについて話した。", summary_section)
         self.assertNotIn("文字起こし本文です", summary_section)
+
+
+class WriteTranscriptTest(unittest.TestCase):
+    """文字起こしだけの保存を検証する。"""
+
+    def test_writes_transcript_without_overwriting(self) -> None:
+        """会議ノートと同じ命名で保存し、同名があれば連番を付ける。"""
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            notes_dir = Path(temporary_directory)
+            metadata = MeetingMetadata(title="定例MTG", date=date(2026, 10, 13))
+
+            first = write_transcript(metadata, "[A] 0.00s–1.00s: 一回目", notes_dir=notes_dir)
+            second = write_transcript(metadata, "[A] 0.00s–1.00s: 二回目", notes_dir=notes_dir)
+
+            self.assertEqual(first.name, "2026-10-13-定例MTG.transcript.txt")
+            self.assertEqual(second.name, "2026-10-13-定例MTG-2.transcript.txt")
+            self.assertEqual(first.read_text(encoding="utf-8"), "[A] 0.00s–1.00s: 一回目\n")
 
 
 if __name__ == "__main__":
