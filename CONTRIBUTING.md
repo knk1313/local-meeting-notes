@@ -66,16 +66,17 @@ PRを作成する前に、以下を確認してください。
 ### 必要なもの
 
 - Python 3.11+
-- （Macでシステム音声を録音する場合）[BlackHole](https://github.com/ExistentialAudio/BlackHole) などの仮想オーディオデバイス
-- OpenAI / Google Speech-to-Text / Claude API のAPIキー
+- macOS 15以降（録音にはmacOS標準の ScreenCaptureKit を使う。仮想オーディオデバイスは不要）
+- Xcode Command Line Tools（録音ヘルパーを `swiftc` でビルドする）
+- OpenAI API（文字起こし）と Claude API（要約）のAPIキー
 
 ### セットアップ手順
 
 ```bash
 git clone https://github.com/knk1313/local-meeting-notes.git
 cd local-meeting-notes/backend
-python -m venv venv
-source venv/bin/activate
+python3 -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
 cp ../.env.example ../.env
 # .env にAPIキーを設定
@@ -84,25 +85,26 @@ cp ../.env.example ../.env
 ### 起動
 
 ```bash
-uvicorn app.main:app --reload
+# 録音して会議ノートを作る（Ctrl+C で停止）
+python -m app record --title "定例MTG"
+
+# ローカルAPI（任意）
+python -m app.api
 ```
 
 ### Mac固有の注意事項
 
-システム音声（会議相手の声）を録音するには、標準のOS機能だけでは取得できないため、BlackHole 等の仮想オーディオデバイスを別途インストール・設定してください。
+初回の録音開始時に、ターミナルへマイクと画面収録（システムオーディオ録音）の許可を求められます。
+システム設定 > プライバシーとセキュリティ で、使用中のターミナルを許可してください。
 
-## テスト・Lint
+## テスト
 
 ```bash
-# テスト
-pytest
-
-# Lint / フォーマット
-ruff check .
-ruff format .
+cd backend
+python -m unittest discover -s tests -t tests
 ```
 
-PRを出す前に両方が通ることを確認してください。
+PRを出す前にテストが通ることを確認してください。Lint ツールは現時点では導入していません。
 
 ## コーディング規約
 

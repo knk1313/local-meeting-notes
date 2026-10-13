@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import argparse
 import tempfile
+import time
 import unittest
+from threading import Barrier
 from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
@@ -266,34 +268,47 @@ class CliTest(unittest.TestCase):
                 ["文字起こしAPIへ送信中... 完了まで数分かかることがあります"],
             )
 
-    def test_numbers_each_part_while_waiting_for_the_api(self) -> None:
-        """分割した場合は、何本目を待っているかが分かるようにする。"""
+    def test_transcribes_parts_concurrently_and_keeps_their_order(self) -> None:
+        """分割した断片は同時に送り、結果と通知は元の順序で扱う。"""
         with tempfile.TemporaryDirectory() as temporary_directory:
             path = Path(temporary_directory) / "recording.wav"
             write_float_wav(path, tone(seconds=0.2))
             statuses: list[str] = []
             shown_while_waiting: list[str] = []
+            both_started = Barrier(2, timeout=5)
 
-            class WatchingSttProvider(SttProvider):
-                """呼び出された時点で表示されているステータスを記録する。"""
+            class ConcurrentSttProvider(SttProvider):
+                """2本が同時に呼ばれたことを確かめ、2本目を先に返す。"""
 
                 def transcribe(self, audio_path: Path) -> list[Segment]:
                     shown_while_waiting.append(statuses[-1])
-                    return [Segment(speaker="A", start=0.0, end=1.0, text="発言")]
+                    both_started.wait()  # 直列なら2本目が来ず、ここで待ち続ける
+                    if audio_path.name.endswith("-01.wav"):
+                        time.sleep(0.05)
+                    return [Segment(speaker="A", start=0.0, end=1.0, text=audio_path.stem)]
 
-            def split(source: Path, **_keywords: object) -> list[AudioPart]:
-                return [AudioPart(path=source, start_seconds=0.0), AudioPart(path=source, start_seconds=600.0)]
+            def split(source: Path, *, parts_dir: Path, **_keywords: object) -> list[AudioPart]:
+                parts_dir.mkdir(parents=True, exist_ok=True)
+                first = parts_dir / "recording-01.wav"
+                second = parts_dir / "recording-02.wav"
+                write_float_wav(first, tone(seconds=0.1))
+                write_float_wav(second, tone(seconds=0.1))
+                return [AudioPart(path=first, start_seconds=0.0), AudioPart(path=second, start_seconds=600.0)]
 
+            received: list[list[Segment]] = []
             with patch("app.cli.split_for_transcription", side_effect=split):
-                _transcribe_audio(path, WatchingSttProvider(), report_status=statuses.append)
+                segments = _transcribe_audio(
+                    path, ConcurrentSttProvider(), report_status=statuses.append, on_part=received.append
+                )
 
             self.assertEqual(
                 shown_while_waiting,
-                [
-                    "文字起こしAPIへ送信中... (1/2) 完了まで数分かかることがあります",
-                    "文字起こしAPIへ送信中... (2/2) 完了まで数分かかることがあります",
-                ],
+                ["文字起こしAPIへ送信中... (2本を並行して処理) 完了まで数分かかることがあります"] * 2,
             )
+            # 2本目が先に終わっても、結果は1本目から順に並ぶ。
+            self.assertEqual([segment.text for segment in segments], ["recording-01", "recording-02"])
+            self.assertEqual([part[0].start for part in received], [0.0, 600.0])
+            self.assertTrue(any(status.startswith("文字起こし完了 (1/2)") for status in statuses))
 
     def test_run_record_transcribes_whole_recording_and_writes_note(self) -> None:
         """録音停止後、会議全体の音声を1回だけ文字起こししてノートを生成する。"""
@@ -401,6 +416,7 @@ class CliTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary_directory:
             temporary_path = Path(temporary_directory)
             notes_dir = temporary_path / "notes"
+            statuses: list[str] = []
             warnings: list[str] = []
             args = argparse.Namespace(title="中断テスト", participants=[], tags=[], keep_transcript=False)
 
@@ -411,19 +427,21 @@ class CliTest(unittest.TestCase):
                     stt_provider=RecordingSttProvider(),
                     analyzer=FakeAnalyzer(),
                     notes_dir=notes_dir,
+                    on_status=statuses.append,
                     on_warning=warnings.append,
                 )
 
             self.assertEqual(exit_code, 0)
             self.assertTrue(next(notes_dir.glob("*.md")).is_file())
+            # 通知には理由を添え、画面には理由を繰り返さず続きだけを出す。
             self.assertEqual(
                 warnings,
                 [
-                    "録音が途中で終了しました（録音が中断されました: "
-                    "取り込みを行うディスプレイまたはウインドウが見つかりませんでした）。"
-                    "取得できたぶんで会議ノートを作成します。"
+                    "録音が途中で終了しました: 録音が中断されました: "
+                    "取り込みを行うディスプレイまたはウインドウが見つかりませんでした"
                 ],
             )
+            self.assertIn("録音は途中で終了しましたが、取得できた0分00秒ぶんから会議ノートを作成します。", statuses)
 
     def test_run_record_reports_recorder_failure_reason(self) -> None:
         """録音ヘルパーが失敗した場合は、終了コードではなく理由を伝える。"""

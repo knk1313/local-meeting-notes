@@ -6,6 +6,8 @@ import argparse
 import shutil
 import sys
 import tempfile
+import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import date, datetime
 from pathlib import Path
@@ -14,6 +16,7 @@ from typing import Callable, Sequence
 from app.audio import AudioCaptureError, AudioRecorder, MacOsAudioRecorder
 from app.audio.compress import compress_for_transcription
 from app.audio.level import is_silent
+from app.audio.wav import WavInfo, read_info
 from app.audio.split import split_for_transcription
 from app.llm import LlmError, MeetingAnalyzer, create_default_analyzer
 from app.output import MeetingMetadata, write_meeting_note
@@ -21,6 +24,9 @@ from app.settings import PROJECT_ROOT, settings
 from app.stt import Segment, SttError, SttProvider
 from app.stt.openai import MAX_FILE_SIZE_BYTES, OpenAiSttProvider
 
+
+#: 分割した断片を同時に文字起こしする数。待ち時間の大半はAPIの応答なので並行させる。
+TRANSCRIPTION_WORKERS = 3
 
 #: 処理の段階。API層がそのまま会議の状態として扱う。
 STAGE_TRANSCRIBING = "transcribing"
@@ -160,11 +166,6 @@ def run_record(
         if on_status is not None:
             on_status(message)
 
-    def report_warning(message: str) -> None:
-        print(message)
-        if on_warning is not None:
-            on_warning(message)
-
     def report_stage(stage: str) -> None:
         if on_stage is not None:
             on_stage(stage)
@@ -179,7 +180,12 @@ def run_record(
         report_status(f"録音に失敗しました: {reason}")
         return EXIT_FAILED
     if exit_code != EXIT_SUCCESS:
-        report_warning(f"録音が途中で終了しました（{reason}）。取得できたぶんで会議ノートを作成します。")
+        # 理由は録音ヘルパーが既に表示しているため、画面には続きだけを出す。
+        # 画面を持たない利用者向けに、通知側では理由を添える。
+        recorded = _format_duration(read_info(recording_path))
+        report_status(f"録音は途中で終了しましたが、取得できた{recorded}から会議ノートを作成します。")
+        if on_warning is not None:
+            on_warning(f"録音が途中で終了しました: {reason}")
 
     if not recording_path.is_file() or is_silent(recording_path):
         _discard_recording(output_dir, report_status)
@@ -188,6 +194,7 @@ def run_record(
 
     report_stage(STAGE_TRANSCRIBING)
     report_status("文字起こし中...")
+    transcription_started = time.monotonic()
     provider = stt_provider if stt_provider is not None else OpenAiSttProvider()
     transcript_path = output_dir / TRANSCRIPT_FILENAME
 
@@ -212,7 +219,7 @@ def run_record(
         report_status("発話を検出できませんでした。会議ノートは作成せず、録音データは破棄しました。")
         return EXIT_NO_SPEECH
 
-    report_status(f"文字起こしを保存しました: {transcript_path}")
+    report_status(f"文字起こしを保存しました: {transcript_path}（所要 {_elapsed(transcription_started)}）")
     report_stage(STAGE_SUMMARIZING)
     output_path = _write_analysis_result(
         args,
@@ -233,25 +240,47 @@ def _transcribe_audio(
     report_status: Callable[[str], None],
     on_part: Callable[[list[Segment]], None] | None = None,
 ) -> list[Segment]:
-    """音声全体を文字起こしする。API の上限を超える場合だけ分割して順に渡す。
+    """音声全体を文字起こしする。API の上限を超える場合は分割し、断片を並行して送る。
 
-    ``on_part`` は断片ごとに、録音全体の時刻へ補正した結果で呼ぶ。
+    ``on_part`` は断片ごとに、録音全体の時刻へ補正した結果を元の順序で呼ぶ。
     """
     with tempfile.TemporaryDirectory(prefix="local-meeting-notes-") as work_dir:
         parts = split_for_transcription(path, parts_dir=Path(work_dir), on_status=report_status)
-        segments: list[Segment] = []
-        for number, part in enumerate(parts, start=1):
-            audio_path = compress_for_transcription(
+        audio_paths = [
+            compress_for_transcription(
                 part.path, max_bytes=MAX_FILE_SIZE_BYTES, work_dir=Path(work_dir), on_status=report_status
             )
-            # APIの応答待ちは数分に及ぶ。待っている理由が分かる表示を最後に出しておく。
-            position = f" ({number}/{len(parts)})" if len(parts) > 1 else ""
-            report_status(f"文字起こしAPIへ送信中...{position} 完了まで数分かかることがあります")
-            part_segments = _shift_segments(provider.transcribe(audio_path), part.start_seconds)
-            if on_part is not None:
-                on_part(part_segments)
-            segments.extend(part_segments)
+            for part in parts
+        ]
+
+        # APIの応答待ちは数分に及ぶ。待っている理由が分かる表示を最後に出しておく。
+        concurrency = f" ({len(parts)}本を並行して処理)" if len(parts) > 1 else ""
+        report_status(f"文字起こしAPIへ送信中...{concurrency} 完了まで数分かかることがあります")
+
+        started = time.monotonic()
+        segments: list[Segment] = []
+        with ThreadPoolExecutor(max_workers=min(TRANSCRIPTION_WORKERS, len(parts))) as executor:
+            futures = [executor.submit(provider.transcribe, audio_path) for audio_path in audio_paths]
+            try:
+                # 結果は元の順序で取り出す。先頭の断片が終わればその場で確定でき、
+                # 途中で失敗しても、それより前の断片は呼び出し元へ渡っている。
+                for number, (part, future) in enumerate(zip(parts, futures), start=1):
+                    part_segments = _shift_segments(future.result(), part.start_seconds)
+                    if len(parts) > 1:
+                        report_status(f"文字起こし完了 ({number}/{len(parts)}) {_elapsed(started)}")
+                    if on_part is not None:
+                        on_part(part_segments)
+                    segments.extend(part_segments)
+            except BaseException:
+                executor.shutdown(wait=False, cancel_futures=True)
+                raise
         return segments
+
+
+def _elapsed(started: float) -> str:
+    """経過時間を「3分05秒」の形で返す。"""
+    seconds = int(time.monotonic() - started)
+    return f"{seconds // 60}分{seconds % 60:02d}秒"
 
 
 def _shift_segments(segments: list[Segment], offset: float) -> list[Segment]:
@@ -280,6 +309,14 @@ def _ensure_providers_configured(
     if analyzer is None:
         # 生成時にキーとモデルの不足を検査するため、ここで一度作って捨てる。
         create_default_analyzer()
+
+
+def _format_duration(info: WavInfo | None) -> str:
+    """録音の長さを表示用の文字列にする。読み取れない場合は「ぶん」と濁す。"""
+    if info is None:
+        return "ぶん"
+    minutes, seconds = divmod(int(info.duration_seconds), 60)
+    return f"{minutes}分{seconds:02d}秒ぶん"
 
 
 def _append_transcript(path: Path, segments: list[Segment]) -> None:
@@ -337,6 +374,7 @@ def _write_analysis_result(
 ) -> Path:
     """文字起こし全文を分析して会議ノートを保存する。"""
     report_status("要約・タスクを抽出中...")
+    started = time.monotonic()
     meeting_analyzer = analyzer if analyzer is not None else create_default_analyzer()
     analysis = meeting_analyzer.analyze(transcript)
 
@@ -354,7 +392,7 @@ def _write_analysis_result(
         transcript_path.write_text(transcript + "\n", encoding="utf-8")
         report_status(f"デバッグ用文字起こし: {transcript_path}")
 
-    report_status(f"会議ノートを保存しました: {output_path}")
+    report_status(f"会議ノートを保存しました: {output_path}（要約の所要 {_elapsed(started)}）")
     return output_path
 
 
