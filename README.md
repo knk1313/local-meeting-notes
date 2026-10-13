@@ -100,15 +100,26 @@ tags: [meeting, project-...]
 ---
 
 ## 要約
-...
+
+- ...
+
+### 決定事項
+
+- ...
+
+### 未決事項
+
+- ...
 
 ## タスク
+
 - [ ] タスク1（担当: ..., 期限: ...）
 - [ ] タスク2
 
 ## 文字起こし
-[話者A] ...
-[話者B] ...
+
+[A] 0.00s–12.50s: ...
+[B] 12.75s–30.00s: ...
 ```
 
 ## 音声ファイルから会議ノートを生成する
@@ -209,19 +220,26 @@ python -m app.api
 | STT | OpenAI API / Google Speech-to-Text |
 | タスク分解LLM | Claude API |
 
-## ディレクトリ構成（案）
+## ディレクトリ構成
 
 ```
 local-meeting-notes/
 ├── backend/
 │   ├── app/
-│   │   ├── main.py
+│   │   ├── __main__.py   # `python -m app record` / `python -m app note`
+│   │   ├── cli.py        # 録音・文字起こし・要約の一気通貫処理
+│   │   ├── api.py        # ローカルAPI（任意）
+│   │   ├── notes.py      # 保存済み会議ノートの読み取り
+│   │   ├── settings.py   # .env の読み込み
+│   │   ├── audio/        # 音声キャプチャ・圧縮・分割・音量判定
 │   │   ├── stt/          # STTプロバイダ抽象化層
-│   │   ├── llm/          # タスク分解ロジック
-│   │   ├── audio/        # 音声キャプチャ・圧縮・音量判定
-│   │   └── output/       # Markdown生成・Git連携
+│   │   ├── llm/          # 要約・タスク抽出
+│   │   ├── prompts/      # LLMプロンプト
+│   │   └── output/       # Markdown生成
+│   ├── tests/
 │   └── requirements.txt
-├── notes/                 # 出力先
+├── data/                  # 録音データ（git管理外）
+├── notes/                 # 会議ノートの出力先（git管理外）
 ├── .env.example
 └── README.md
 ```

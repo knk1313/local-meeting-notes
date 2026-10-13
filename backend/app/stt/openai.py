@@ -34,8 +34,8 @@ SUPPORTED_SUFFIXES = frozenset(
 class OpenAiSttProvider(SttProvider):
     """OpenAI による文字起こしプロバイダ。
 
-    音声ファイルを分割せず 1 本まるごと API に渡す。
-    チャンク分割による逐次呼び出しはフェーズ 3 で別途実装する。
+    受け取った音声ファイルを 1 本まるごと API に渡す。長さや容量の上限に
+    合わせた分割・圧縮は呼び出し側（app.audio）で行う。
     """
 
     def __init__(

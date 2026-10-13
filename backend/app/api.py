@@ -1,4 +1,4 @@
-"""ローカル会議UI向けのFastAPIアプリケーション。"""
+"""会議の録音と会議ノートをHTTPで扱うローカルAPI。"""
 
 from __future__ import annotations
 
@@ -23,14 +23,14 @@ SessionPhase = Literal["recording", "transcribing", "summarizing", "completed", 
 
 
 class StartMeetingRequest(BaseModel):
-    """会議開始時にフロントエンドから受け取る情報。"""
+    """会議開始時に受け取る情報。"""
 
     title: str = Field(min_length=1, max_length=120)
     participants: list[str] = Field(default_factory=list, max_length=30)
 
 
 class TranscriptSegmentResponse(BaseModel):
-    """ブラウザへ返す文字起こし断片。"""
+    """文字起こし断片。"""
 
     speaker: str | None
     start: float | None
@@ -88,7 +88,7 @@ class MeetingSession:
     _lock: Lock = field(default_factory=Lock, init=False, repr=False)
 
     def start(self) -> None:
-        """録音と逐次STTをバックグラウンドで開始する。"""
+        """録音から会議ノート生成までをバックグラウンドで開始する。"""
         self._thread = Thread(target=self._run, name=f"meeting-{self.id}", daemon=True)
         self._thread.start()
 
@@ -105,7 +105,7 @@ class MeetingSession:
         self.recorder.request_stop()
 
     def snapshot(self) -> MeetingResponse:
-        """ロック下で、フロント表示用の一貫した状態を返す。"""
+        """ロック下で、一貫した現在の状態を返す。"""
         with self._lock:
             return MeetingResponse(
                 id=self.id,
@@ -263,7 +263,7 @@ def _note_summary(note: StoredNote) -> NoteSummaryResponse:
 
 @app.post("/api/meetings", response_model=MeetingResponse, status_code=201)
 def start_meeting(request: StartMeetingRequest) -> MeetingResponse:
-    """会議の録音・逐次文字起こしを開始する。"""
+    """会議の録音を開始する。停止後に文字起こしと会議ノート生成へ進む。"""
     try:
         return service.start(request).snapshot()
     except RuntimeError as exc:
