@@ -14,7 +14,7 @@ class AudioRecorder(ABC):
     """システム音声とマイク音声を録音するプロバイダ。"""
 
     @abstractmethod
-    def record(self, output_dir: Path, chunk_seconds: int) -> int:
+    def record(self, output_dir: Path, block_seconds: int) -> int:
         """録音を開始し、終了時のプロセス終了コードを返す。"""
 
     @property

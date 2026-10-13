@@ -160,7 +160,7 @@ def run_record(
 
     report_status(f"録音セッションの出力先: {output_dir}")
     report_status("録音中... 停止すると文字起こしと会議ノートを生成します。")
-    exit_code = active_recorder.record(output_dir, settings.recording_chunk_seconds)
+    exit_code = active_recorder.record(output_dir, settings.recording_block_seconds)
 
     # 権限拒否や画面スリープによる中断は、録音ヘルパーのstderrにしか理由が出ない。
     reason = active_recorder.last_error or f"終了コード {exit_code}"

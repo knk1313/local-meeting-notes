@@ -18,8 +18,8 @@ from app.settings import PROJECT_ROOT
 SWIFT_SOURCE_PATH = Path(__file__).resolve().parent / "native" / "macos_recorder.swift"
 BUILD_DIR = PROJECT_ROOT / "backend" / ".build"
 BINARY_PATH = BUILD_DIR / "macos-recorder"
-MINIMUM_CHUNK_SECONDS = 5
-MAXIMUM_CHUNK_SECONDS = 60
+MINIMUM_BLOCK_SECONDS = 5
+MAXIMUM_BLOCK_SECONDS = 60
 
 # 失敗理由として保持する、録音ヘルパーのstderr末尾の行数。
 RETAINED_ERROR_LINES = 5
@@ -47,9 +47,9 @@ class MacOsAudioRecorder(AudioRecorder):
         """録音ヘルパーがstderrへ出力した直近の内容を返す。"""
         return "\n".join(self._error_lines) or None
 
-    def record(self, output_dir: Path, chunk_seconds: int) -> int:
+    def record(self, output_dir: Path, block_seconds: int) -> int:
         """ネイティブ録音ヘルパーを起動し、停止されるまで待機する。"""
-        process = self.start(output_dir, chunk_seconds)
+        process = self.start(output_dir, block_seconds)
         try:
             return process.wait()
         except KeyboardInterrupt:
@@ -60,9 +60,9 @@ class MacOsAudioRecorder(AudioRecorder):
                 self._error_reader.join(timeout=2)
             self._clear_process(process)
 
-    def start(self, output_dir: Path, chunk_seconds: int) -> subprocess.Popen[bytes]:
+    def start(self, output_dir: Path, block_seconds: int) -> subprocess.Popen[bytes]:
         """録音ヘルパーを非同期で起動し、停止用のプロセスを返す。"""
-        _validate_chunk_seconds(chunk_seconds)
+        _validate_block_seconds(block_seconds)
         binary_path = self._build_binary()
         output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -75,8 +75,8 @@ class MacOsAudioRecorder(AudioRecorder):
                     str(binary_path),
                     "--output-dir",
                     str(output_dir),
-                    "--chunk-seconds",
-                    str(chunk_seconds),
+                    "--block-seconds",
+                    str(block_seconds),
                 ],
                 stderr=subprocess.PIPE,
             )
@@ -167,10 +167,10 @@ class MacOsAudioRecorder(AudioRecorder):
         return BINARY_PATH
 
 
-def _validate_chunk_seconds(chunk_seconds: int) -> None:
+def _validate_block_seconds(block_seconds: int) -> None:
     """扱いやすい範囲のチャンク長か検証する。"""
-    if MINIMUM_CHUNK_SECONDS <= chunk_seconds <= MAXIMUM_CHUNK_SECONDS:
+    if MINIMUM_BLOCK_SECONDS <= block_seconds <= MAXIMUM_BLOCK_SECONDS:
         return
     raise AudioCaptureError(
-        f"チャンク長は{MINIMUM_CHUNK_SECONDS}〜{MAXIMUM_CHUNK_SECONDS}秒で指定してください: {chunk_seconds}"
+        f"書き出し単位は{MINIMUM_BLOCK_SECONDS}〜{MAXIMUM_BLOCK_SECONDS}秒で指定してください: {block_seconds}"
     )
