@@ -18,8 +18,13 @@ AFINFO_PATH = Path("/usr/bin/afinfo")
 #: 分割のためにWAVへ展開するときの形式（16bit整数・モノラル）。
 DECODED_SAMPLE_FORMAT = "LEI16"
 
-#: 上から順に試すAACのビットレート。25MBに収まる長さは 32kbps で約100分、16kbps で約200分。
-COMPRESSION_BITRATES = (32_000, 24_000, 16_000)
+#: 上から順に試すAACのビットレート。音質を落とすほど文字起こしの精度も落ちるため、
+#: 上限に収まる範囲で最も高いものを使う。25MBに収まる長さは 128kbps で約27分、
+#: 32kbps で約100分、16kbps で約200分。
+COMPRESSION_BITRATES = (128_000, 96_000, 64_000, 32_000, 24_000, 16_000)
+
+#: 長さから見積もったサイズに上乗せする余裕。コンテナのヘッダなどで実際は少し大きくなる。
+ESTIMATE_MARGIN = 1.05
 
 
 def compress_for_transcription(
@@ -44,7 +49,7 @@ def compress_for_transcription(
 
     work_dir.mkdir(parents=True, exist_ok=True)
     destination = work_dir / f"{path.stem}.m4a"
-    for bitrate in COMPRESSION_BITRATES:
+    for bitrate in _candidate_bitrates(path, max_bytes):
         if on_status is not None:
             on_status(f"文字起こし用に音声を圧縮中... ({bitrate // 1000}kbps)")
         _encode(path, destination, bitrate)
@@ -55,6 +60,23 @@ def compress_for_transcription(
         "録音が長すぎるため、文字起こしAPIへ渡せるサイズまで圧縮できませんでした: "
         f"{path}"
     )
+
+
+def _candidate_bitrates(path: Path, max_bytes: int) -> tuple[int, ...]:
+    """試すビットレートを返す。明らかに上限を超えるものは変換せずに飛ばす。
+
+    長さが分からない場合はすべて試す。どれも収まらない見積もりの場合は、
+    最も低いものだけを試す（収まらなければ呼び出し側で失敗として扱う）。
+    """
+    duration = audio_duration_seconds(path)
+    if duration is None:
+        return COMPRESSION_BITRATES
+    fitting = tuple(
+        bitrate
+        for bitrate in COMPRESSION_BITRATES
+        if bitrate / 8 * duration * ESTIMATE_MARGIN <= max_bytes
+    )
+    return fitting or COMPRESSION_BITRATES[-1:]
 
 
 def _encode(source: Path, destination: Path, bitrate: int) -> None:
