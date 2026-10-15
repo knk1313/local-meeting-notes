@@ -19,7 +19,7 @@ from app.audio.level import is_silent
 from app.audio.wav import WavInfo, read_info
 from app.audio.split import split_for_transcription
 from app.llm import LlmError, MeetingAnalyzer, create_default_analyzer
-from app.output import MeetingMetadata, write_meeting_note
+from app.output import MeetingMetadata, write_meeting_note, write_transcript
 from app.settings import PROJECT_ROOT, settings
 from app.stt import Segment, SttError, SttProvider
 from app.stt.openai import MAX_FILE_SIZE_BYTES, OpenAiSttProvider
@@ -49,6 +49,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("audio_path", type=Path, metavar="AUDIO_PATH", help="音声ファイルのパス")
     _add_metadata_arguments(parser)
+    _add_transcribe_only_argument(parser)
     return parser
 
 
@@ -67,9 +68,10 @@ def build_note_parser() -> argparse.ArgumentParser:
 def build_record_parser() -> argparse.ArgumentParser:
     """macOS録音コマンド用の引数パーサーを作成する。"""
     parser = argparse.ArgumentParser(
-        description="Macのシステム音声と既定マイクを録音し、会議全体のWAVとSTT用チャンクを保存します。"
+        description="Macのシステム音声と既定マイクを録音し、停止後に文字起こしと会議ノートを生成します。"
     )
     _add_metadata_arguments(parser)
+    _add_transcribe_only_argument(parser)
     return parser
 
 
@@ -84,6 +86,15 @@ def _add_metadata_arguments(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--keep-transcript", action="store_true", help="デバッグ用に文字起こしだけの .transcript.txt も保存する"
+    )
+
+
+def _add_transcribe_only_argument(parser: argparse.ArgumentParser) -> None:
+    """要約を行わず文字起こしで止めるオプションを追加する。"""
+    parser.add_argument(
+        "--transcribe-only",
+        action="store_true",
+        help="文字起こしで止め、要約（Claude API）を呼ばない。文字起こしは NOTES_DIR に .transcript.txt として保存する",
     )
 
 
@@ -120,6 +131,8 @@ def run_pipeline(
     if not transcript:
         raise RuntimeError("文字起こし結果が空です。")
 
+    if args.transcribe_only:
+        return _write_transcript_only(args, transcript, notes_dir=notes_dir or settings.notes_dir)
     return _write_analysis_result(args, transcript, notes_dir=notes_dir or settings.notes_dir, analyzer=analyzer)
 
 
@@ -148,7 +161,7 @@ def run_record(
     on_status: Callable[[str], None] | None = None,
 ) -> int:
     """録音を1ファイルとして取り、停止後にまとめて文字起こしして会議ノートを保存する。"""
-    _ensure_providers_configured(stt_provider, analyzer)
+    _ensure_providers_configured(stt_provider, analyzer, transcribe_only=args.transcribe_only)
     output_dir = _resolve_recording_output_dir()
     recording_path = output_dir / RECORDING_FILENAME
     active_recorder = recorder if recorder is not None else MacOsAudioRecorder()
@@ -202,6 +215,9 @@ def run_record(
         return EXIT_NO_SPEECH
 
     report_status(f"文字起こしを保存しました: {transcript_path}（所要 {_elapsed(transcription_started)}）")
+    if args.transcribe_only:
+        _write_transcript_only(args, transcript, notes_dir=notes_dir or settings.notes_dir, report_status=report_status)
+        return EXIT_SUCCESS
     _write_analysis_result(
         args,
         transcript,
@@ -277,15 +293,19 @@ def _shift_segments(segments: list[Segment], offset: float) -> list[Segment]:
 
 
 def _ensure_providers_configured(
-    stt_provider: SttProvider | None, analyzer: MeetingAnalyzer | None
+    stt_provider: SttProvider | None,
+    analyzer: MeetingAnalyzer | None,
+    *,
+    transcribe_only: bool = False,
 ) -> None:
     """録音を始める前に、設定不足で必ず失敗する状態を見つけて止める。
 
     1時間録音したあとにキーの不備で会議ノートを作れない、という事態を避ける。
+    文字起こしで止める場合は、要約側の設定は不要。
     """
     if stt_provider is None and not settings.openai_api_key:
         raise SttError("OPENAI_API_KEY が設定されていません。.env を確認してください。")
-    if analyzer is None:
+    if analyzer is None and not transcribe_only:
         # 生成時にキーとモデルの不足を検査するため、ここで一度作って捨てる。
         create_default_analyzer()
 
@@ -343,6 +363,34 @@ def _resolve_recording_output_dir() -> Path:
     return PROJECT_ROOT / "data" / directory_name
 
 
+def _write_transcript_only(
+    args: argparse.Namespace,
+    transcript: str,
+    *,
+    notes_dir: Path,
+    report_status: Callable[[str], None] = print,
+) -> Path:
+    """要約を行わずに文字起こしだけを保存し、あとから会議ノートを作る手順を案内する。"""
+    metadata = _metadata(args)
+    output_path = write_transcript(metadata, transcript, notes_dir=notes_dir)
+    report_status(f"文字起こしを保存しました: {output_path}")
+    report_status(
+        "要約は行っていません。"
+        f'`python -m app note {output_path} --title "{metadata.title}"` で会議ノートを作れます。'
+    )
+    return output_path
+
+
+def _metadata(args: argparse.Namespace) -> MeetingMetadata:
+    """コマンドライン引数から会議ノートのメタデータを組み立てる。"""
+    return MeetingMetadata(
+        title=args.title or default_title(),
+        date=date.today(),
+        participants=args.participants,
+        tags=args.tags,
+    )
+
+
 def _write_analysis_result(
     args: argparse.Namespace,
     transcript: str,
@@ -358,13 +406,7 @@ def _write_analysis_result(
     analysis = meeting_analyzer.analyze(transcript)
 
     report_status("Markdownを書き出し中...")
-    metadata = MeetingMetadata(
-        title=args.title or default_title(),
-        date=date.today(),
-        participants=args.participants,
-        tags=args.tags,
-    )
-    output_path = write_meeting_note(metadata, analysis, transcript, notes_dir=notes_dir)
+    output_path = write_meeting_note(_metadata(args), analysis, transcript, notes_dir=notes_dir)
 
     if args.keep_transcript:
         transcript_path = output_path.with_suffix(".transcript.txt")

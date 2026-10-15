@@ -71,12 +71,31 @@ def write_meeting_note(
     notes_dir: Path | None = None,
 ) -> Path:
     """会議ノートをNOTES_DIRへ書き出し、保存先パスを返す。"""
+    content = render_meeting_note(metadata, analysis, transcript)
+    return _write_unique(_destination(notes_dir), metadata, ".md", content)
+
+
+def write_transcript(
+    metadata: MeetingMetadata,
+    transcript: str,
+    *,
+    notes_dir: Path | None = None,
+) -> Path:
+    """文字起こしだけをNOTES_DIRへ書き出し、保存先パスを返す。要約は行わない。"""
+    return _write_unique(_destination(notes_dir), metadata, ".transcript.txt", transcript.rstrip() + "\n")
+
+
+def _destination(notes_dir: Path | None) -> Path:
+    """出力先ディレクトリを解決し、無ければ作る。"""
     destination = notes_dir if notes_dir is not None else settings.notes_dir
     destination.mkdir(parents=True, exist_ok=True)
-    content = render_meeting_note(metadata, analysis, transcript)
+    return destination
 
+
+def _write_unique(destination: Path, metadata: MeetingMetadata, extension: str, content: str) -> Path:
+    """既存ファイルを上書きしないよう、連番を付けて書き出す。"""
     for suffix in range(1, 10_000):
-        candidate = destination / _filename(metadata, suffix)
+        candidate = destination / _filename(metadata, suffix, extension)
         try:
             with candidate.open("x", encoding="utf-8", newline="\n") as output_file:
                 output_file.write(content)
@@ -84,7 +103,7 @@ def write_meeting_note(
             continue
         return candidate
 
-    raise RuntimeError("会議ノートの保存先ファイル名を決定できません。")
+    raise RuntimeError("保存先のファイル名を決定できません。")
 
 
 def _render_list(items: list[str]) -> str:
@@ -111,9 +130,9 @@ def _render_tasks(analysis: MeetingAnalysis) -> str:
     return "\n".join(rendered_tasks)
 
 
-def _filename(metadata: MeetingMetadata, suffix: int) -> str:
+def _filename(metadata: MeetingMetadata, suffix: int, extension: str) -> str:
     """日付・会議名・連番から衝突しない候補ファイル名を生成する。"""
     title = INVALID_FILENAME_CHARACTERS.sub("-", metadata.title).strip(" .-")
     normalized_title = re.sub(r"[-\s]+", "-", title) or "meeting"
     serial = "" if suffix == 1 else f"-{suffix}"
-    return f"{metadata.date.isoformat()}-{normalized_title}{serial}.md"
+    return f"{metadata.date.isoformat()}-{normalized_title}{serial}{extension}"
