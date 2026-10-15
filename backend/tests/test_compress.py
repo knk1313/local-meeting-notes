@@ -5,7 +5,9 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
+from app.audio import compress
 from app.audio.compress import compress_for_transcription
 from wav_fixtures import tone, write_float_wav
 
@@ -42,6 +44,33 @@ class CompressTest(unittest.TestCase):
         self.assertLessEqual(compressed.stat().st_size, 100_000)
         self.assertLess(compressed.stat().st_size, path.stat().st_size)
         self.assertTrue(statuses[0].startswith("文字起こし用に音声を圧縮中..."))
+        # 余裕のある上限なら、最も高いビットレートで1回だけ変換する。
+        self.assertEqual(statuses, ["文字起こし用に音声を圧縮中... (128kbps)"])
+
+    def test_skips_bitrates_estimated_over_the_limit(self) -> None:
+        """長さから上限を超えると見積もれるビットレートは試さない。"""
+        path = self.directory / "recording.wav"
+        # 30分なら、25MBに収まるのは96kbpsまで。
+        with mock.patch.object(compress, "audio_duration_seconds", return_value=1800.0):
+            bitrates = compress._candidate_bitrates(path, 25 * 1024 * 1024)
+
+        self.assertEqual(bitrates, (96_000, 64_000, 32_000, 24_000, 16_000))
+
+    def test_tries_lowest_bitrate_when_nothing_fits(self) -> None:
+        """どれも収まらない見積もりなら、最も低いビットレートだけを試す。"""
+        path = self.directory / "recording.wav"
+        with mock.patch.object(compress, "audio_duration_seconds", return_value=100_000.0):
+            bitrates = compress._candidate_bitrates(path, 25 * 1024 * 1024)
+
+        self.assertEqual(bitrates, (16_000,))
+
+    def test_tries_all_bitrates_when_duration_is_unknown(self) -> None:
+        """長さが分からなければ、高い方から順にすべて試す。"""
+        path = self.directory / "recording.wav"
+        with mock.patch.object(compress, "audio_duration_seconds", return_value=None):
+            bitrates = compress._candidate_bitrates(path, 25 * 1024 * 1024)
+
+        self.assertEqual(bitrates, compress.COMPRESSION_BITRATES)
 
     def test_missing_file_is_left_to_the_provider(self) -> None:
         """存在しないファイルは、STTプロバイダ側の検査に委ねる。"""

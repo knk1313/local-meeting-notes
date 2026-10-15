@@ -19,6 +19,9 @@ from app.stt.base import ProgressCallback, Segment, SttError, SttProvider
 #: 話者分離に対応した既定モデル。
 DEFAULT_MODEL = "gpt-4o-transcribe-diarize"
 
+#: 会議の言語。自動判定に任せると、相づちなどが英語で書き起こされることがある。
+LANGUAGE = "ja"
+
 #: 話者付きの区間が1つ確定するたびに届くストリームのイベント。
 SEGMENT_EVENT = "transcript.text.segment"
 
@@ -74,6 +77,7 @@ class OpenAiSttProvider(SttProvider):
                     file=audio,
                     model=self._model,
                     response_format="diarized_json",
+                    language=LANGUAGE,
                     # 30 秒を超える音声では指定が必要。
                     chunking_strategy="auto",
                     stream=True,

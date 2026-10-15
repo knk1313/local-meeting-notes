@@ -106,6 +106,8 @@ class OpenAiSttStreamTest(unittest.TestCase):
         progress: list[float] = []
         segments = OpenAiSttProvider(client=client).transcribe(self.audio_path, on_progress=progress.append)
         self.assertTrue(client.audio.transcriptions.create.call_args.kwargs["stream"])
+        # 自動判定で相づちが英語にならないよう、日本語を指定して送る。
+        self.assertEqual(client.audio.transcriptions.create.call_args.kwargs["language"], "ja")
         return segments, progress
 
     def test_builds_segments_and_reports_progress(self) -> None:
