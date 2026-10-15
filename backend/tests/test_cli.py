@@ -28,14 +28,14 @@ from app.audio import AudioRecorder
 from app.audio.split import AudioPart
 from app.llm import LlmError, MeetingAnalysis, Task
 from app.settings import settings
-from app.stt import Segment, SttError, SttProvider
+from app.stt import ProgressCallback, Segment, SttError, SttProvider
 from wav_fixtures import silence, tone, write_float_wav
 
 
 class FakeSttProvider(SttProvider):
     """外部APIを呼ばずに文字起こし結果を返すテスト用プロバイダ。"""
 
-    def transcribe(self, path: Path) -> list[Segment]:
+    def transcribe(self, path: Path, *, on_progress: ProgressCallback | None = None) -> list[Segment]:
         """固定の話者ラベル付き文字起こしを返す。"""
         return [
             Segment(speaker="A", start=0.0, end=1.25, text="次回までに資料を作成します。"),
@@ -140,7 +140,7 @@ class RecordingSttProvider(SttProvider):
     def __init__(self) -> None:
         self.paths: list[Path] = []
 
-    def transcribe(self, path: Path) -> list[Segment]:
+    def transcribe(self, path: Path, *, on_progress: ProgressCallback | None = None) -> list[Segment]:
         """ファイル名に応じた文字起こし結果を返す。"""
         self.paths.append(path)
         return [Segment(speaker="A", start=0.0, end=1.0, text=path.stem)]
@@ -149,7 +149,7 @@ class RecordingSttProvider(SttProvider):
 class SilentSttProvider(SttProvider):
     """発話を検出できなかった場合を再現するテスト用STTプロバイダ。"""
 
-    def transcribe(self, path: Path) -> list[Segment]:
+    def transcribe(self, path: Path, *, on_progress: ProgressCallback | None = None) -> list[Segment]:
         """文字起こし結果なしを返す。"""
         return []
 
@@ -160,7 +160,7 @@ class SecondPartFailingSttProvider(SttProvider):
     def __init__(self) -> None:
         self.calls = 0
 
-    def transcribe(self, path: Path) -> list[Segment]:
+    def transcribe(self, path: Path, *, on_progress: ProgressCallback | None = None) -> list[Segment]:
         """1本目だけ成功し、以降は失敗する。"""
         self.calls += 1
         if self.calls > 1:
@@ -171,7 +171,7 @@ class SecondPartFailingSttProvider(SttProvider):
 class FailingSttProvider(SttProvider):
     """STT呼び出しが失敗する場合を再現するテスト用STTプロバイダ。"""
 
-    def transcribe(self, path: Path) -> list[Segment]:
+    def transcribe(self, path: Path, *, on_progress: ProgressCallback | None = None) -> list[Segment]:
         """常に失敗する。"""
         raise SttError("OpenAI の文字起こしに失敗しました")
 
@@ -266,7 +266,7 @@ class CliTest(unittest.TestCase):
             class WatchingSttProvider(SttProvider):
                 """呼び出された時点で表示されているステータスを記録する。"""
 
-                def transcribe(self, audio_path: Path) -> list[Segment]:
+                def transcribe(self, audio_path: Path, *, on_progress: ProgressCallback | None = None) -> list[Segment]:
                     shown_while_waiting.append(statuses[-1])
                     return [Segment(speaker="A", start=0.0, end=1.0, text="発言")]
 
@@ -289,7 +289,7 @@ class CliTest(unittest.TestCase):
             class ConcurrentSttProvider(SttProvider):
                 """2本が同時に呼ばれたことを確かめ、2本目を先に返す。"""
 
-                def transcribe(self, audio_path: Path) -> list[Segment]:
+                def transcribe(self, audio_path: Path, *, on_progress: ProgressCallback | None = None) -> list[Segment]:
                     shown_while_waiting.append(statuses[-1])
                     both_started.wait()  # 直列なら2本目が来ず、ここで待ち続ける
                     if audio_path.name.endswith("-01.wav"):
@@ -588,6 +588,35 @@ class CliTest(unittest.TestCase):
 
             self.assertTrue(output_path.name.endswith("-定例MTG.transcript.txt"))
             self.assertEqual([path.name for path in notes_dir.iterdir()], [output_path.name])
+
+    def test_reports_transcription_progress_as_percentage(self) -> None:
+        """区間が確定するたびの位置から、全体に対する割合を表示する。"""
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "recording.wav"
+            write_float_wav(path, tone(seconds=2))
+            statuses: list[str] = []
+
+            class ProgressingSttProvider(SttProvider):
+                """区間の確定を順に知らせる。"""
+
+                def transcribe(self, audio_path: Path, *, on_progress: ProgressCallback | None = None) -> list[Segment]:
+                    for seconds in (0.1, 0.5, 0.55, 1.0, 2.0):
+                        on_progress(seconds)
+                    return [Segment(speaker="A", start=0.0, end=2.0, text="発言")]
+
+            _transcribe_audio(path, ProgressingSttProvider(), report_status=statuses.append)
+
+            progress = [status for status in statuses if status.startswith("文字起こし中... ")]
+            # 10%の区切りをまたいだときだけ出す。5%（最初の区切りの手前）と
+            # 27%（25%と同じ区切りの中）は間引かれる。
+            self.assertEqual(
+                progress,
+                [
+                    "文字起こし中... 25% (0分00秒 / 0分02秒)",
+                    "文字起こし中... 50% (0分01秒 / 0分02秒)",
+                    "文字起こし中... 100% (0分02秒 / 0分02秒)",
+                ],
+            )
 
 
 if __name__ == "__main__":

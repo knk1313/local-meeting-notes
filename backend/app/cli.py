@@ -8,13 +8,14 @@ import sys
 import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor
+from threading import Lock
 from dataclasses import replace
 from datetime import date, datetime
 from pathlib import Path
 from typing import Callable, Sequence
 
 from app.audio import AudioCaptureError, AudioRecorder, MacOsAudioRecorder
-from app.audio.compress import compress_for_transcription
+from app.audio.compress import audio_duration_seconds, compress_for_transcription
 from app.audio.level import is_silent
 from app.audio.wav import WavInfo, read_info
 from app.audio.split import split_for_transcription
@@ -27,6 +28,9 @@ from app.stt.openai import MAX_FILE_SIZE_BYTES, OpenAiSttProvider
 
 #: 分割した断片を同時に文字起こしする数。待ち時間の大半はAPIの応答なので並行させる。
 TRANSCRIPTION_WORKERS = 3
+
+#: 文字起こしの進み具合を表示する間隔（秒）。10%進むごとにも表示する。
+PROGRESS_INTERVAL_SECONDS = 30
 
 #: 録音ヘルパーが書き出す、会議全体の音声ファイル名。
 RECORDING_FILENAME = "recording.wav"
@@ -253,9 +257,13 @@ def _transcribe_audio(
         report_status(f"文字起こしAPIへ送信中...{concurrency} 完了まで数分かかることがあります")
 
         started = time.monotonic()
+        progress = _TranscriptionProgress([_audio_seconds(part.path) for part in parts], report_status)
         segments: list[Segment] = []
         with ThreadPoolExecutor(max_workers=min(TRANSCRIPTION_WORKERS, len(parts))) as executor:
-            futures = [executor.submit(provider.transcribe, audio_path) for audio_path in audio_paths]
+            futures = [
+                executor.submit(provider.transcribe, audio_path, on_progress=progress.tracker(index))
+                for index, audio_path in enumerate(audio_paths)
+            ]
             try:
                 # 結果は元の順序で取り出す。先頭の断片が終わればその場で確定でき、
                 # 途中で失敗しても、それより前の断片は呼び出し元へ渡っている。
@@ -272,10 +280,64 @@ def _transcribe_audio(
         return segments
 
 
+class _TranscriptionProgress:
+    """並行して文字起こし中の断片の進み具合をまとめ、間引いて表示する。"""
+
+    def __init__(
+        self,
+        durations: list[float | None],
+        report_status: Callable[[str], None],
+        *,
+        interval: float = PROGRESS_INTERVAL_SECONDS,
+    ) -> None:
+        self._durations = durations
+        # 長さの分からない断片があると割合を出せないため、そのときは表示しない。
+        self._total = sum(durations) if durations and all(d is not None for d in durations) else None
+        self._done = [0.0] * len(durations)
+        self._report_status = report_status
+        self._interval = interval
+        self._lock = Lock()
+        self._last_reported_at = time.monotonic()
+        self._last_step = 0
+
+    def tracker(self, index: int) -> Callable[[float], None]:
+        """断片 ``index`` の進み具合を受け取るコールバックを返す。"""
+        return lambda seconds: self._update(index, seconds)
+
+    def _update(self, index: int, seconds: float) -> None:
+        if not self._total:
+            return
+        with self._lock:
+            limit = self._durations[index] or 0.0
+            self._done[index] = max(self._done[index], min(seconds, limit))
+            done = sum(self._done)
+            percent = min(100, int(done / self._total * 100))
+            now = time.monotonic()
+            # 毎回出すと流れすぎるので、10%進んだか一定時間経ったときだけ表示する。
+            if percent // 10 <= self._last_step and now - self._last_reported_at < self._interval:
+                return
+            self._last_step = max(self._last_step, percent // 10)
+            self._last_reported_at = now
+            self._report_status(
+                f"文字起こし中... {percent}% ({_format_seconds(done)} / {_format_seconds(self._total)})"
+            )
+
+
+def _audio_seconds(path: Path) -> float | None:
+    """音声の長さ（秒）を返す。取得できない場合はNone。"""
+    info = read_info(path)
+    return info.duration_seconds if info is not None else audio_duration_seconds(path)
+
+
 def _elapsed(started: float) -> str:
     """経過時間を「3分05秒」の形で返す。"""
-    seconds = int(time.monotonic() - started)
-    return f"{seconds // 60}分{seconds % 60:02d}秒"
+    return _format_seconds(time.monotonic() - started)
+
+
+def _format_seconds(seconds: float) -> str:
+    """秒数を「3分05秒」の形で返す。"""
+    whole = int(seconds)
+    return f"{whole // 60}分{whole % 60:02d}秒"
 
 
 def _shift_segments(segments: list[Segment], offset: float) -> list[Segment]:

@@ -14,10 +14,16 @@ from typing import Any
 
 from openai import AuthenticationError, OpenAI, OpenAIError, RateLimitError
 
-from app.stt.base import Segment, SttError, SttProvider
+from app.stt.base import ProgressCallback, Segment, SttError, SttProvider
 
 #: 話者分離に対応した既定モデル。
 DEFAULT_MODEL = "gpt-4o-transcribe-diarize"
+
+#: 話者付きの区間が1つ確定するたびに届くストリームのイベント。
+SEGMENT_EVENT = "transcript.text.segment"
+
+#: 文字起こしの完了を表すストリームのイベント。
+DONE_EVENT = "transcript.text.done"
 
 #: 残高不足を表す OpenAI のエラーコード。リトライでは回復しない。
 INSUFFICIENT_QUOTA_CODE = "insufficient_quota"
@@ -52,19 +58,35 @@ class OpenAiSttProvider(SttProvider):
         self._model = model
         self._client = client if client is not None else OpenAI()
 
-    def transcribe(self, path: Path) -> list[Segment]:
-        """音声ファイルを文字起こしし、話者ラベル付きの `Segment` 列を返す。"""
+    def transcribe(self, path: Path, *, on_progress: ProgressCallback | None = None) -> list[Segment]:
+        """音声ファイルを文字起こしし、話者ラベル付きの `Segment` 列を返す。
+
+        結果はストリームで受け取る。区間が確定するたびにその終了時刻を
+        ``on_progress`` へ渡すため、長い音声でも進み具合が分かる。
+        """
         self._validate(path)
 
+        segments: list[Segment] = []
+        done_text = ""
         try:
             with path.open("rb") as audio:
-                response = self._client.audio.transcriptions.create(
+                stream = self._client.audio.transcriptions.create(
                     file=audio,
                     model=self._model,
                     response_format="diarized_json",
                     # 30 秒を超える音声では指定が必要。
                     chunking_strategy="auto",
+                    stream=True,
                 )
+                for event in stream:
+                    event_type = getattr(event, "type", None)
+                    if event_type == SEGMENT_EVENT:
+                        segment = _to_segment(event)
+                        segments.append(segment)
+                        if on_progress is not None and segment.end is not None:
+                            on_progress(segment.end)
+                    elif event_type == DONE_EVENT:
+                        done_text = getattr(event, "text", "") or ""
         except AuthenticationError as exc:
             raise SttError(
                 "OpenAI APIキーが拒否されました。.env の OPENAI_API_KEY を確認してください。"
@@ -83,7 +105,14 @@ class OpenAiSttProvider(SttProvider):
             # 理由が分からないと対処できないため、APIの説明をそのまま伝える。
             raise SttError(f"OpenAI の文字起こしに失敗しました: {_error_message(exc)}") from exc
 
-        return _to_segments(response)
+        # 本文があるのに区間が届かないのは、話者分離に対応しないモデルの場合。
+        # 空のまま返すと「発話なし」として録音を破棄してしまうため、失敗として扱う。
+        if not segments and done_text.strip():
+            raise SttError(
+                "OpenAI の応答に話者付きの区間が含まれていません。"
+                "話者分離に対応したモデルを指定しているか確認してください。"
+            )
+        return segments
 
     def _validate(self, path: Path) -> None:
         """API に渡す前にローカルで検査し、明確なエラーにして落とす。"""
@@ -136,21 +165,11 @@ def _error_detail(error: OpenAIError, key: str) -> str | None:
     return None
 
 
-def _to_segments(response: Any) -> list[Segment]:
-    """`diarized_json` のレスポンスを `Segment` 列に変換する。"""
-    raw_segments = getattr(response, "segments", None)
-    if raw_segments is None:
-        raise SttError(
-            "OpenAI のレスポンスに segments が含まれていません。"
-            "話者分離に対応したモデルを指定しているか確認してください。"
-        )
-
-    return [
-        Segment(
-            speaker=getattr(segment, "speaker", None),
-            start=getattr(segment, "start", None),
-            end=getattr(segment, "end", None),
-            text=getattr(segment, "text", ""),
-        )
-        for segment in raw_segments
-    ]
+def _to_segment(event: Any) -> Segment:
+    """ストリームの区間イベントを `Segment` に変換する。"""
+    return Segment(
+        speaker=getattr(event, "speaker", None),
+        start=getattr(event, "start", None),
+        end=getattr(event, "end", None),
+        text=getattr(event, "text", ""),
+    )

@@ -72,6 +72,7 @@ python -m app.cli ../data/recordings_YYYYMMDDHHMMSS/recording.wav --title "定�
 
 - 25MB を超える録音は `afconvert` でモノラル AAC へ圧縮する（32kbps で約 100 分ぶんが収まる）
 - 1 回あたり 1400 秒の上限を超える録音は、20 分を目安に**前後 15 秒で最も静かな位置**で分割し、断片を並行して送る。分割した場合、話者ラベルは断片ごとに振り直される
+- 結果はストリームで受け取り、区間が確定するたびの位置から進み具合を % で表示する（10% ごと、または 30 秒ごと）
 - 発話の無い録音は送らずに破棄する
 
 **要約・タスク抽出** — Claude。プロンプトは `backend/app/prompts/meeting_analysis.md` で変更できる。

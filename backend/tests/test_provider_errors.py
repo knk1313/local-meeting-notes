@@ -5,6 +5,7 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import httpx
@@ -88,6 +89,48 @@ class ClaudeAnalyzerErrorTest(unittest.TestCase):
         error = AnthropicAuthenticationError("bad key", response=_response(401), body=None)
 
         self.assertIn("ANTHROPIC_API_KEY", self._analyze_raising(error))
+
+
+class OpenAiSttStreamTest(unittest.TestCase):
+    """ストリームで受け取った区間を組み立て、進み具合を伝えることを検証する。"""
+
+    def setUp(self) -> None:
+        self._temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self._temporary.cleanup)
+        self.audio_path = Path(self._temporary.name) / "recording.wav"
+        write_float_wav(self.audio_path, tone(seconds=0.1))
+
+    def _transcribe(self, events: list[SimpleNamespace]) -> tuple[list, list[float]]:
+        client = MagicMock()
+        client.audio.transcriptions.create.return_value = iter(events)
+        progress: list[float] = []
+        segments = OpenAiSttProvider(client=client).transcribe(self.audio_path, on_progress=progress.append)
+        self.assertTrue(client.audio.transcriptions.create.call_args.kwargs["stream"])
+        return segments, progress
+
+    def test_builds_segments_and_reports_progress(self) -> None:
+        """区間が届くたびに組み立て、その終了時刻を進み具合として渡す。"""
+        segments, progress = self._transcribe(
+            [
+                SimpleNamespace(type="transcript.text.segment", speaker="A", start=0.0, end=4.5, text="前半"),
+                SimpleNamespace(type="transcript.text.segment", speaker="B", start=4.5, end=9.0, text="後半"),
+                SimpleNamespace(type="transcript.text.done", text="前半後半"),
+            ]
+        )
+
+        self.assertEqual([(s.speaker, s.start, s.end, s.text) for s in segments], [("A", 0.0, 4.5, "前半"), ("B", 4.5, 9.0, "後半")])
+        self.assertEqual(progress, [4.5, 9.0])
+
+    def test_rejects_text_without_speaker_segments(self) -> None:
+        """本文だけで区間が無い応答は、発話なしと取り違えず失敗にする。"""
+        with self.assertRaises(SttError):
+            self._transcribe([SimpleNamespace(type="transcript.text.done", text="話者分離なしの本文")])
+
+    def test_returns_empty_for_silence(self) -> None:
+        """本文も区間も無ければ、発話なしとして空を返す。"""
+        segments, progress = self._transcribe([SimpleNamespace(type="transcript.text.done", text="")])
+
+        self.assertEqual((segments, progress), ([], []))
 
 
 if __name__ == "__main__":
