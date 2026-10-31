@@ -9,7 +9,7 @@ import unittest
 from threading import Barrier
 from dataclasses import replace
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from app.cli import (
     EXIT_FAILED,
@@ -17,9 +17,11 @@ from app.cli import (
     EXIT_NO_SPEECH,
     RECORDING_FILENAME,
     TRANSCRIPT_FILENAME,
+    NoSpeechError,
     build_note_parser,
     build_record_parser,
     format_transcript,
+    main,
     run_note,
     run_pipeline,
     run_record,
@@ -204,7 +206,8 @@ class CliTest(unittest.TestCase):
         args = argparse.Namespace(title=None, participants=[], tags=[], keep_transcript=False, transcribe_only=False)
 
         with patch("app.cli.settings", replace(settings, recording_block_seconds=20)):
-            exit_code = run_record(args, recorder=recorder)
+            # 録音前の設定検査が実行する人の .env を読まないよう、STT と要約器も差し替える。
+            exit_code = run_record(args, recorder=recorder, stt_provider=FakeSttProvider(), analyzer=FakeAnalyzer())
 
         # チャンクが1つも出ないまま停止した録音は、ノートを作らず破棄する。
         self.assertEqual(exit_code, EXIT_NO_SPEECH)
@@ -254,6 +257,75 @@ class CliTest(unittest.TestCase):
                 run_record(args, recorder=NeverCalledRecorder(), stt_provider=FakeSttProvider())
 
         self.assertIn("ANTHROPIC_API_KEY", str(raised.exception))
+
+    def test_run_pipeline_stops_before_transcribing_without_stt_key(self) -> None:
+        """音声ファイルからの生成でも、STTのキーが無ければ録音の経路と同じ案内で止める。"""
+        args = argparse.Namespace(
+            audio_path=Path("sample.m4a"), title=None, participants=[], tags=[], keep_transcript=False, transcribe_only=False
+        )
+
+        with patch("app.cli.settings", replace(settings, openai_api_key=None)):
+            with self.assertRaises(SttError) as raised:
+                run_pipeline(args, analyzer=FakeAnalyzer())
+
+        self.assertIn("OPENAI_API_KEY", str(raised.exception))
+
+    def test_run_pipeline_stops_before_transcribing_without_llm_key(self) -> None:
+        """要約用のキーが無い場合は、料金のかかる文字起こしを始める前に止める。"""
+        provider = RecordingSttProvider()
+        args = argparse.Namespace(
+            audio_path=Path("sample.m4a"), title=None, participants=[], tags=[], keep_transcript=False, transcribe_only=False
+        )
+
+        with patch("app.llm.anthropic.settings", replace(settings, anthropic_api_key=None)):
+            with self.assertRaises(LlmError) as raised:
+                run_pipeline(args, stt_provider=provider)
+
+        self.assertIn("ANTHROPIC_API_KEY", str(raised.exception))
+        self.assertEqual(provider.paths, [])
+
+    def test_run_note_stops_without_llm_key(self) -> None:
+        """保存済みの文字起こしからの生成でも、要約用のキーが無ければ同じ案内で止める。"""
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            transcript_path = Path(temporary_directory) / TRANSCRIPT_FILENAME
+            transcript_path.write_text("[A] 0.00s–1.00s: 設定テストです\n", encoding="utf-8")
+            args = build_note_parser().parse_args([str(transcript_path)])
+
+            with patch("app.llm.anthropic.settings", replace(settings, anthropic_api_key=None)):
+                with self.assertRaises(LlmError) as raised:
+                    run_note(args)
+
+        self.assertIn("ANTHROPIC_API_KEY", str(raised.exception))
+
+    def test_run_pipeline_does_not_send_silent_file_to_stt(self) -> None:
+        """発話の無い音声ファイルはSTTへ送らず止める。利用者のファイルは消さない。"""
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "silent.wav"
+            write_float_wav(path, silence())
+            provider = RecordingSttProvider()
+            args = argparse.Namespace(
+                audio_path=path, title=None, participants=[], tags=[], keep_transcript=False, transcribe_only=False
+            )
+
+            with self.assertRaises(NoSpeechError):
+                run_pipeline(args, stt_provider=provider, analyzer=FakeAnalyzer())
+
+            self.assertEqual(provider.paths, [])
+            self.assertTrue(path.is_file())
+
+    def test_main_reports_silent_file_as_no_speech(self) -> None:
+        """発話の無い音声ファイルは、録音の経路と同じ終了コードで伝え、tracebackを出さない。"""
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "silent.wav"
+            write_float_wav(path, silence())
+
+            with (
+                patch("app.cli.settings", replace(settings, openai_api_key="test-key")),
+                patch("app.cli.create_default_analyzer", MagicMock()),
+            ):
+                exit_code = main([str(path)])
+
+        self.assertEqual(exit_code, EXIT_NO_SPEECH)
 
     def test_shows_what_it_is_waiting_for_while_the_api_responds(self) -> None:
         """API の応答待ちの間は、待っている理由が分かる表示を出したままにする。"""

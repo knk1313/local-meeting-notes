@@ -27,6 +27,7 @@ class CompressTest(unittest.TestCase):
 
         self.assertEqual(compress_for_transcription(path, max_bytes=10_000_000, work_dir=self.directory / 'work'), path)
 
+    @unittest.skipUnless(compress.AFCONVERT_PATH.is_file(), "afconvert は macOS にしか無い")
     def test_compresses_audio_over_the_limit(self) -> None:
         """上限を超える音声はm4aへ変換して上限内に収める。"""
         path = self.directory / "recording.wav"

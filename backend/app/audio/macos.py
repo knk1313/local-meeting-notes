@@ -31,6 +31,10 @@ WARNING_PREFIX = "警告:"
 STOP_RETRY_SECONDS = 1.0
 STOP_RETRY_LIMIT = 5
 
+# 送り直しても止まらないときに強制終了へ切り替えたあと、終了を待つ時間（秒）。
+# SIGTERM で終わらなければ SIGKILL を送る。待ち続けるとCLIが止まったままになるため。
+FORCE_STOP_TIMEOUT_SECONDS = 2.0
+
 
 class MacOsAudioRecorder(AudioRecorder):
     """macOSのシステム音声と既定マイクを録音するプロバイダ。"""
@@ -115,12 +119,27 @@ class MacOsAudioRecorder(AudioRecorder):
         Thread(target=self._resend_stop, args=(process,), name="recorder-stop", daemon=True).start()
 
     def _resend_stop(self, process: subprocess.Popen[bytes]) -> None:
-        """停止シグナルが効くまで、間隔をあけて送り直す。"""
+        """停止シグナルが効くまで、間隔をあけて送り直す。それでも止まらなければ強制終了する。"""
         for _ in range(STOP_RETRY_LIMIT):
             time.sleep(STOP_RETRY_SECONDS)
             if process.poll() is not None:
                 return
             self._send_stop(process)
+        time.sleep(STOP_RETRY_SECONDS)
+        if process.poll() is None:
+            self._force_stop(process)
+
+    def _force_stop(self, process: subprocess.Popen[bytes]) -> None:
+        """停止シグナルに応じないヘルパーを強制終了し、親の ``wait()`` が返るようにする。"""
+        print("警告: 録音ヘルパーが停止に応じないため、強制終了します。", file=sys.stderr)
+        try:
+            process.terminate()
+            try:
+                process.wait(timeout=FORCE_STOP_TIMEOUT_SECONDS)
+            except subprocess.TimeoutExpired:
+                process.kill()
+        except (OSError, ValueError):
+            return
 
     def _send_stop(self, process: subprocess.Popen[bytes]) -> None:
         """停止シグナルを送る。すでに終了していれば何もしない。"""

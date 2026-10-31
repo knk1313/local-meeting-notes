@@ -1,6 +1,6 @@
 """STT プロバイダが共通で実装するインターフェース。
 
-`main.py` などの上位層は本モジュールの `SttProvider` / `Segment` のみに依存し、
+`cli.py` などの上位層は本モジュールの `SttProvider` / `Segment` のみに依存し、
 OpenAI や Google といったプロバイダ固有の詳細を意識しない。
 """
 
