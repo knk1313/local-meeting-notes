@@ -46,6 +46,13 @@ EXIT_FAILED = 1
 EXIT_NO_SPEECH = 2
 
 
+class NoSpeechError(SttError):
+    """音声ファイルに発話が無く、会議ノートを作らなかったことを表す例外。
+
+    ファイル入力の経路で使う。録音の経路は終了コード ``EXIT_NO_SPEECH`` で同じ状態を表す。
+    """
+
+
 def build_parser() -> argparse.ArgumentParser:
     """コマンドライン引数パーサーを作成する。"""
     parser = argparse.ArgumentParser(
@@ -127,13 +134,19 @@ def run_pipeline(
     notes_dir: Path | None = None,
 ) -> Path:
     """文字起こしから要約、Markdown出力までを順に実行する。"""
+    _ensure_providers_configured(stt_provider, analyzer, transcribe_only=args.transcribe_only)
     audio_path = args.audio_path.expanduser()
+
+    # 録音の経路と同じく、発話の無い音声は料金のかかるSTTへ送らない。
+    # 利用者のファイルなので削除はしない。
+    if is_silent(audio_path):
+        raise NoSpeechError(f"発話を検出できませんでした。会議ノートは作成しません: {audio_path}")
 
     print("文字起こし中...")
     provider = stt_provider if stt_provider is not None else OpenAiSttProvider()
     transcript = format_transcript(_transcribe_audio(audio_path, provider, report_status=print))
     if not transcript:
-        raise RuntimeError("文字起こし結果が空です。")
+        raise NoSpeechError("文字起こし結果が空でした。会議ノートは作成しません。")
 
     if args.transcribe_only:
         return _write_transcript_only(args, transcript, notes_dir=notes_dir or settings.notes_dir)
@@ -147,6 +160,7 @@ def run_note(
     notes_dir: Path | None = None,
 ) -> Path:
     """録音時に保存した文字起こしから、会議ノートを作り直す。"""
+    _ensure_analyzer_configured(analyzer)
     transcript_path = args.transcript_path.expanduser()
     transcript = transcript_path.read_text(encoding="utf-8").strip()
     if not transcript:
@@ -360,14 +374,21 @@ def _ensure_providers_configured(
     *,
     transcribe_only: bool = False,
 ) -> None:
-    """録音を始める前に、設定不足で必ず失敗する状態を見つけて止める。
+    """処理を始める前に、設定不足で必ず失敗する状態を見つけて止める。
 
     1時間録音したあとにキーの不備で会議ノートを作れない、という事態を避ける。
+    ファイル入力の経路でも同じ検査を通し、tracebackではなく同じ案内で止める。
     文字起こしで止める場合は、要約側の設定は不要。
     """
     if stt_provider is None and not settings.openai_api_key:
         raise SttError("OPENAI_API_KEY が設定されていません。.env を確認してください。")
-    if analyzer is None and not transcribe_only:
+    if not transcribe_only:
+        _ensure_analyzer_configured(analyzer)
+
+
+def _ensure_analyzer_configured(analyzer: MeetingAnalyzer | None) -> None:
+    """要約に使うキーとモデルの設定が揃っているか検査する。"""
+    if analyzer is None:
         # 生成時にキーとモデルの不足を検査するため、ここで一度作って捨てる。
         create_default_analyzer()
 
@@ -500,6 +521,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0
         args = build_parser().parse_args(arguments)
         run_pipeline(args)
+    except NoSpeechError as exc:
+        # 失敗ではなく、録音の経路と同じ「発話なし」の結果として伝える。
+        print(exc)
+        return EXIT_NO_SPEECH
     except (AudioCaptureError, SttError, LlmError, OSError, ValueError) as exc:
         # 想定済みの失敗は、traceback ではなく理由だけを表示する。
         print(f"エラー: {exc}", file=sys.stderr)

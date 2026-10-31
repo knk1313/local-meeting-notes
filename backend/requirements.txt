@@ -1,3 +1,5 @@
-openai
-anthropic
-python-dotenv
+# 上限はメジャーバージョンに付ける。SDKのメジャー更新でHTTPクライアント(httpx/httpx2)などの
+# 依存が入れ替わるため、テストと動作を確認してから上げる。
+openai>=3.1,<4
+anthropic>=0.122,<3
+python-dotenv>=1.2,<2

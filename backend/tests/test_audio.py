@@ -34,6 +34,16 @@ done
 """
 
 
+IGNORING_HELPER = """#!/bin/sh
+# 停止シグナルを無視し続ける録音ヘルパー。
+trap '' INT
+echo ready > "$READY"
+while true; do
+    sleep 0.05
+done
+"""
+
+
 class MacOsAudioRecorderTest(unittest.TestCase):
     """録音ヘルパーを起動する前の入力検証を確認する。"""
 
@@ -144,6 +154,37 @@ class RecorderStopTest(unittest.TestCase):
             self.assertFalse(worker.is_alive())
             self.assertEqual(exit_codes, [0])
             self.assertGreaterEqual(int(received.read_text(encoding="utf-8").strip()), 2)
+
+
+    def test_force_stops_the_helper_that_ignores_the_stop_signal(self) -> None:
+        """送り直しても止まらないヘルパーは強制終了し、親が待ち続けないようにする。"""
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_path = Path(temporary_directory)
+            ready = temporary_path / "ready"
+            helper = temporary_path / "ignoring-recorder"
+            helper.write_text(IGNORING_HELPER, encoding="utf-8")
+            helper.chmod(helper.stat().st_mode | stat.S_IXUSR)
+            os.environ["READY"] = str(ready)
+            self.addCleanup(os.environ.pop, "READY", None)
+
+            recorder = MacOsAudioRecorder()
+            exit_codes: list[int] = []
+
+            with (
+                patch.object(MacOsAudioRecorder, "_build_binary", return_value=helper),
+                patch("app.audio.macos.STOP_RETRY_SECONDS", 0.05),
+                patch("app.audio.macos.STOP_RETRY_LIMIT", 2),
+            ):
+                worker = Thread(target=lambda: exit_codes.append(recorder.record(temporary_path / "out", 15)))
+                worker.start()
+                _wait_until(ready.exists)
+                recorder.request_stop()
+                worker.join(timeout=5)
+
+            self.assertFalse(worker.is_alive())
+            # 強制終了なので正常終了にはならない。
+            self.assertEqual(len(exit_codes), 1)
+            self.assertNotEqual(exit_codes, [0])
 
 
 def _wait_until(condition, timeout: float = 5.0) -> None:

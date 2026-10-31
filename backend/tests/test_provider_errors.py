@@ -8,7 +8,6 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-import httpx
 from anthropic import APIStatusError as AnthropicApiStatusError
 from anthropic import AuthenticationError as AnthropicAuthenticationError
 from openai import AuthenticationError as OpenAiAuthenticationError
@@ -21,9 +20,13 @@ from app.stt.openai import OpenAiSttProvider
 from wav_fixtures import tone, write_float_wav
 
 
-def _response(status_code: int) -> httpx.Response:
-    """SDKの例外が必要とする最小限のHTTPレスポンスを作る。"""
-    return httpx.Response(status_code=status_code, request=httpx.Request("POST", "https://example.test"))
+def _response(status_code: int) -> SimpleNamespace:
+    """SDKの例外が必要とする最小限のHTTPレスポンスを作る。
+
+    SDKの例外はレスポンスの ``request`` / ``status_code`` / ``headers`` しか読まない。
+    HTTPクライアント(httpx / httpx2)はSDKの版で入れ替わるため、テストから直接は使わない。
+    """
+    return SimpleNamespace(status_code=status_code, headers={}, request=SimpleNamespace(method="POST"))
 
 
 class OpenAiSttErrorTest(unittest.TestCase):
@@ -89,6 +92,14 @@ class ClaudeAnalyzerErrorTest(unittest.TestCase):
         error = AnthropicAuthenticationError("bad key", response=_response(401), body=None)
 
         self.assertIn("ANTHROPIC_API_KEY", self._analyze_raising(error))
+
+    def test_keeps_api_reason_for_other_errors(self) -> None:
+        """分類していない失敗は、原因を絞り込めるようAPIの説明をそのまま残す。"""
+        error = AnthropicApiStatusError(
+            "overloaded", response=_response(529), body={"error": {"message": "Overloaded, retry later"}}
+        )
+
+        self.assertIn("Overloaded, retry later", self._analyze_raising(error))
 
 
 class OpenAiSttStreamTest(unittest.TestCase):

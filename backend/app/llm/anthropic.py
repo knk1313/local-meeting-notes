@@ -116,7 +116,8 @@ class ClaudeMeetingAnalyzer(MeetingAnalyzer):
                     "Anthropicのクレジット残高が不足しています。"
                     "https://console.anthropic.com/settings/billing で確認してください。"
                 ) from exc
-            raise LlmError("Claudeによる会議分析に失敗しました。") from exc
+            # 理由が分からないと対処できないため、APIの説明をそのまま伝える。
+            raise LlmError(f"Claudeによる会議分析に失敗しました: {_error_message(exc)}") from exc
 
         return _to_meeting_analysis(response)
 
@@ -138,6 +139,19 @@ def _create_client(workspace_id: str | None) -> Anthropic:
     if not workspace_id:
         return Anthropic()
     return Anthropic(default_headers={"anthropic-workspace-id": workspace_id})
+
+
+def _error_message(error: APIError) -> str:
+    """Anthropicのエラー応答から、利用者に見せる説明を取り出す。
+
+    ``{"error": {"message": ...}}`` の形の本文があればそれを使い、無ければ例外の文字列を使う。
+    """
+    body = getattr(error, "body", None)
+    if isinstance(body, Mapping):
+        detail = body.get("error")
+        if isinstance(detail, Mapping) and isinstance(detail.get("message"), str):
+            return detail["message"]
+    return getattr(error, "message", None) or str(error)
 
 
 def _load_prompt(path: Path, transcript: str) -> str:
