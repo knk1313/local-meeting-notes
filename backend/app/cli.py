@@ -21,6 +21,7 @@ from app.audio.wav import WavInfo, read_info
 from app.audio.split import split_for_transcription
 from app.llm import LlmError, MeetingAnalyzer, create_default_analyzer
 from app.output import MeetingMetadata, write_meeting_note, write_transcript
+from app.power import prevent_idle_sleep
 from app.settings import PROJECT_ROOT, settings
 from app.stt import ProgressCallback, Segment, SttConnectionError, SttError, SttProvider
 from app.stt.openai import MAX_FILE_SIZE_BYTES, OpenAiSttProvider
@@ -560,6 +561,12 @@ def _format_timestamp_range(start: float | None, end: float | None) -> str:
 def main(argv: Sequence[str] | None = None) -> int:
     """CLIを実行する。"""
     arguments = list(sys.argv[1:] if argv is None else argv)
+    with prevent_idle_sleep():
+        return _dispatch(arguments)
+
+
+def _dispatch(arguments: list[str]) -> int:
+    """サブコマンドに応じて処理を振り分け、終了コードを返す。"""
     try:
         if arguments[:1] == ["record"]:
             args = build_record_parser().parse_args(arguments[1:])
