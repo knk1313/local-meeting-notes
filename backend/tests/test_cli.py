@@ -30,7 +30,7 @@ from app.audio import AudioRecorder
 from app.audio.split import AudioPart
 from app.llm import LlmError, MeetingAnalysis, Task
 from app.settings import settings
-from app.stt import ProgressCallback, Segment, SttError, SttProvider
+from app.stt import ProgressCallback, Segment, SttConnectionError, SttError, SttProvider
 from wav_fixtures import silence, tone, write_float_wav
 
 
@@ -176,6 +176,22 @@ class FailingSttProvider(SttProvider):
     def transcribe(self, path: Path, *, on_progress: ProgressCallback | None = None) -> list[Segment]:
         """常に失敗する。"""
         raise SttError("OpenAI の文字起こしに失敗しました")
+
+
+class DisconnectingSttProvider(SttProvider):
+    """最初の数回だけ通信が切れるテスト用STTプロバイダ。"""
+
+    def __init__(self, failures: int, error: SttError | None = None) -> None:
+        self.failures = failures
+        self.error = error if error is not None else SttConnectionError("OpenAI との通信が切れました")
+        self.calls = 0
+
+    def transcribe(self, path: Path, *, on_progress: ProgressCallback | None = None) -> list[Segment]:
+        """``failures`` 回までは失敗し、それ以降は成功する。"""
+        self.calls += 1
+        if self.calls <= self.failures:
+            raise self.error
+        return [Segment(speaker="A", start=0.0, end=1.0, text="再開後の発言")]
 
 
 class CliTest(unittest.TestCase):
@@ -541,6 +557,72 @@ class CliTest(unittest.TestCase):
         self.assertEqual(statuses[-1], "発話を検出できませんでした。会議ノートは作成せず、録音データは破棄しました。")
         self.assertFalse(notes_dir.exists())
         self.assertFalse(recording_dir.exists())
+
+    @patch("app.cli.RETRY_DELAYS_SECONDS", (0, 0))
+    def test_resends_after_connection_is_lost(self) -> None:
+        """スリープなどで通信が切れても、送り直して文字起こしを完了させる。"""
+        provider = DisconnectingSttProvider(failures=2)
+
+        exit_code, statuses, notes_dir, _recording_dir = self._run_record(FakeMeetingRecorder(), provider)
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(provider.calls, 3)
+        self.assertTrue(any("後に送り直します" in status for status in statuses))
+        self.assertIn("再開後の発言", next(notes_dir.glob("*.md")).read_text(encoding="utf-8"))
+
+    @patch("app.cli.RETRY_DELAYS_SECONDS", (0, 0))
+    def test_gives_up_when_connection_does_not_come_back(self) -> None:
+        """送り直しても通信が戻らなければ、録音を残して失敗にする。"""
+        provider = DisconnectingSttProvider(failures=10)
+
+        exit_code, statuses, _notes_dir, recording_dir = self._run_record(FakeMeetingRecorder(), provider)
+
+        self.assertEqual(exit_code, EXIT_FAILED)
+        self.assertEqual(provider.calls, 3)
+        self.assertIn("2回送り直しましたが", statuses[-1])
+        self.assertTrue((recording_dir / RECORDING_FILENAME).is_file())
+
+    @patch("app.cli.RETRY_DELAYS_SECONDS", (0, 0))
+    def test_does_not_resend_failures_that_waiting_cannot_fix(self) -> None:
+        """残高不足などは待っても直らないため、送り直さずにすぐ止める。"""
+        provider = DisconnectingSttProvider(failures=10, error=SttError("クレジット残高が不足しています"))
+
+        exit_code, _statuses, _notes_dir, _recording_dir = self._run_record(FakeMeetingRecorder(), provider)
+
+        self.assertEqual(exit_code, EXIT_FAILED)
+        self.assertEqual(provider.calls, 1)
+
+    @patch("app.cli.RETRY_DELAYS_SECONDS", (60,))
+    def test_stops_waiting_to_resend_when_another_part_fails(self) -> None:
+        """他の断片が失敗したら、送り直しの待ちをやめてすぐに終わる。"""
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "recording.wav"
+            write_float_wav(path, tone(seconds=0.2))
+
+            class FirstFailsSecondDisconnects(SttProvider):
+                """1本目は待っても直らない失敗、2本目は通信の切断にする。"""
+
+                def transcribe(self, audio_path: Path, *, on_progress: ProgressCallback | None = None) -> list[Segment]:
+                    if audio_path.name.endswith("-01.wav"):
+                        time.sleep(0.05)  # 2本目が送り直しの待ちに入ってから失敗させる
+                        raise SttError("クレジット残高が不足しています")
+                    raise SttConnectionError("OpenAI との通信が切れました")
+
+            def split(source: Path, *, parts_dir: Path, **_keywords: object) -> list[AudioPart]:
+                parts_dir.mkdir(parents=True, exist_ok=True)
+                first = parts_dir / "recording-01.wav"
+                second = parts_dir / "recording-02.wav"
+                write_float_wav(first, tone(seconds=0.1))
+                write_float_wav(second, tone(seconds=0.1))
+                return [AudioPart(path=first, start_seconds=0.0), AudioPart(path=second, start_seconds=600.0)]
+
+            started = time.monotonic()
+            with patch("app.cli.split_for_transcription", side_effect=split):
+                with self.assertRaises(SttError):
+                    _transcribe_audio(path, FirstFailsSecondDisconnects(), report_status=lambda _message: None)
+
+            # 一時ディレクトリの片付けも含め、60秒の待ちを最後まで待たずに戻る。
+            self.assertLess(time.monotonic() - started, 5)
 
     def test_run_record_keeps_recording_when_transcription_fails(self) -> None:
         """文字起こしに失敗したときは、再試行できるよう録音データを残す。"""

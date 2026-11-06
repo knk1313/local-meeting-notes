@@ -8,7 +8,7 @@ import sys
 import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor
-from threading import Lock
+from threading import Event, Lock
 from dataclasses import replace
 from datetime import date, datetime
 from pathlib import Path
@@ -22,7 +22,7 @@ from app.audio.split import split_for_transcription
 from app.llm import LlmError, MeetingAnalyzer, create_default_analyzer
 from app.output import MeetingMetadata, write_meeting_note, write_transcript
 from app.settings import PROJECT_ROOT, settings
-from app.stt import Segment, SttError, SttProvider
+from app.stt import ProgressCallback, Segment, SttConnectionError, SttError, SttProvider
 from app.stt.openai import MAX_FILE_SIZE_BYTES, OpenAiSttProvider
 
 
@@ -31,6 +31,10 @@ TRANSCRIPTION_WORKERS = 3
 
 #: 文字起こしの進み具合を表示する間隔（秒）。10%進むごとにも表示する。
 PROGRESS_INTERVAL_SECONDS = 30
+
+#: 通信が切れた断片を送り直すまでの待ち時間（秒）。合計で約14分待つ。
+#: PCを閉じてスリープすると通信が切れる。開いたあとネットワークが戻るまで待てるよう、間隔を延ばしていく。
+RETRY_DELAYS_SECONDS = (5, 15, 30, 60, 120, 300, 300)
 
 #: 録音ヘルパーが書き出す、会議全体の音声ファイル名。
 RECORDING_FILENAME = "recording.wav"
@@ -273,9 +277,19 @@ def _transcribe_audio(
         started = time.monotonic()
         progress = _TranscriptionProgress([_audio_seconds(part.path) for part in parts], report_status)
         segments: list[Segment] = []
+        # 1本が失敗したら、送り直しを待っている他の断片もやめさせる。待ち続けるとプロセスが終われない。
+        cancelled = Event()
         with ThreadPoolExecutor(max_workers=min(TRANSCRIPTION_WORKERS, len(parts))) as executor:
             futures = [
-                executor.submit(provider.transcribe, audio_path, on_progress=progress.tracker(index))
+                executor.submit(
+                    _transcribe_with_retry,
+                    provider,
+                    audio_path,
+                    on_progress=progress.tracker(index),
+                    report_status=report_status,
+                    label=f" ({index + 1}/{len(parts)})" if len(parts) > 1 else "",
+                    cancelled=cancelled,
+                )
                 for index, audio_path in enumerate(audio_paths)
             ]
             try:
@@ -289,9 +303,43 @@ def _transcribe_audio(
                         on_part(part_segments)
                     segments.extend(part_segments)
             except BaseException:
+                cancelled.set()
                 executor.shutdown(wait=False, cancel_futures=True)
                 raise
         return segments
+
+
+def _transcribe_with_retry(
+    provider: SttProvider,
+    path: Path,
+    *,
+    on_progress: ProgressCallback,
+    report_status: Callable[[str], None],
+    label: str = "",
+    cancelled: Event | None = None,
+) -> list[Segment]:
+    """1本を文字起こしする。通信が切れたときは、間隔を延ばしながら送り直す。
+
+    スリープ中はこの処理も止まっているため、PCを開いたあとに続きから送り直すことになる。
+    待っても回復しない失敗（キーの誤りや残高不足など）は送り直さない。
+    ``cancelled`` が立ったら、送り直しの待ちをやめて失敗として返す。
+    """
+    cancelled = cancelled if cancelled is not None else Event()
+    for delay in RETRY_DELAYS_SECONDS:
+        try:
+            return provider.transcribe(path, on_progress=on_progress)
+        except SttConnectionError as exc:
+            if cancelled.is_set():
+                raise
+            report_status(f"{exc}{label}\n{_format_seconds(delay)}後に送り直します。")
+            if cancelled.wait(delay):
+                raise
+    try:
+        return provider.transcribe(path, on_progress=on_progress)
+    except SttConnectionError as exc:
+        raise SttConnectionError(
+            f"{exc}（{len(RETRY_DELAYS_SECONDS)}回送り直しましたが、つながりませんでした）"
+        ) from exc
 
 
 class _TranscriptionProgress:
