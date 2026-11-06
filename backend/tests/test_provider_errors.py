@@ -10,12 +10,14 @@ from unittest.mock import MagicMock
 
 from anthropic import APIStatusError as AnthropicApiStatusError
 from anthropic import AuthenticationError as AnthropicAuthenticationError
+from httpx2 import RemoteProtocolError
+from openai import APIConnectionError
 from openai import AuthenticationError as OpenAiAuthenticationError
 from openai import RateLimitError
 
 from app.llm import LlmError
 from app.llm.anthropic import ClaudeMeetingAnalyzer
-from app.stt import SttError
+from app.stt import SttConnectionError, SttError
 from app.stt.openai import OpenAiSttProvider
 from wav_fixtures import tone, write_float_wav
 
@@ -64,6 +66,28 @@ class OpenAiSttErrorTest(unittest.TestCase):
         error = OpenAiAuthenticationError("bad key", response=_response(401), body=None)
 
         self.assertIn("OPENAI_API_KEY", self._transcribe_raising(error))
+
+
+    def test_reports_lost_connection_as_retryable(self) -> None:
+        """接続できないときは、送り直せば回復しうる失敗として区別する。"""
+        client = MagicMock()
+        client.audio.transcriptions.create.side_effect = APIConnectionError(request=MagicMock())
+
+        with self.assertRaises(SttConnectionError):
+            OpenAiSttProvider(client=client).transcribe(self.audio_path)
+
+    def test_reports_connection_lost_while_streaming_as_retryable(self) -> None:
+        """受信の途中で切れた場合（SDKの例外に包まれずに届く）も、送り直せる失敗にする。"""
+
+        def broken_stream():
+            raise RemoteProtocolError("peer closed connection")
+            yield  # ジェネレーターにするため
+
+        client = MagicMock()
+        client.audio.transcriptions.create.return_value = broken_stream()
+
+        with self.assertRaises(SttConnectionError):
+            OpenAiSttProvider(client=client).transcribe(self.audio_path)
 
 
 class ClaudeAnalyzerErrorTest(unittest.TestCase):

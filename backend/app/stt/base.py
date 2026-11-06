@@ -24,6 +24,14 @@ class SttError(RuntimeError):
     """
 
 
+class SttConnectionError(SttError):
+    """通信が切れた、または応答が途絶えたため文字起こしに失敗したことを表す例外。
+
+    PCのスリープなどで起き、時間をおいて送り直せば回復しうる。
+    キーの誤りや残高不足のように、待っても回復しない失敗とは区別する。
+    """
+
+
 @dataclass(frozen=True)
 class Segment:
     """話者ラベル付きの文字起こし断片。

@@ -12,9 +12,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from openai import AuthenticationError, OpenAI, OpenAIError, RateLimitError
+from httpx2 import TransportError
+from openai import APIConnectionError, AuthenticationError, OpenAI, OpenAIError, RateLimitError
 
-from app.stt.base import ProgressCallback, Segment, SttError, SttProvider
+from app.stt.base import ProgressCallback, Segment, SttConnectionError, SttError, SttProvider
 
 #: 話者分離に対応した既定モデル。
 DEFAULT_MODEL = "gpt-4o-transcribe-diarize"
@@ -91,6 +92,10 @@ class OpenAiSttProvider(SttProvider):
                             on_progress(segment.end)
                     elif event_type == DONE_EVENT:
                         done_text = getattr(event, "text", "") or ""
+        except (APIConnectionError, TransportError) as exc:
+            # 応答の受信中に通信が切れると、SDKの例外に包まれず HTTP クライアントの例外のまま届く。
+            # httpx2 は openai 3.x が使う HTTP クライアント（requirements.txt でメジャーを固定）。
+            raise SttConnectionError(f"OpenAI との通信が切れました: {exc or type(exc).__name__}") from exc
         except AuthenticationError as exc:
             raise SttError(
                 "OpenAI APIキーが拒否されました。.env の OPENAI_API_KEY を確認してください。"
